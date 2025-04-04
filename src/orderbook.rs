@@ -79,6 +79,7 @@ impl PriceLevel {
     /// # Returns
     /// * `Some(&Order)` - Reference to the next order to be matched
     /// * `None` - If there are no orders at this price level
+    #[inline]
     pub fn peek_next_order(&self) -> Option<&Order> {
         self.orders.front()
     }
@@ -223,10 +224,10 @@ impl OrderBook {
         None
     }
 
-    /// Returns the best order at a given side without removing it.
+    /// Gets the next order to be matched without removing it from the book.
     ///
     /// # Arguments
-    /// * `side` - The side (Bid/Ask) to peek at
+    /// * `side` - The side of the order book to peek (Bid or Ask)
     ///
     /// # Returns
     /// * `Some(&Order)` - Reference to the next order to be matched
@@ -236,6 +237,7 @@ impl OrderBook {
     /// - For bids, returns the highest priced order
     /// - For asks, returns the lowest priced order
     /// - Within a price level, returns the first order (FIFO)
+    #[inline]
     pub fn peek_best_order(&self, side: Side) -> Option<&Order> {
         let (price_levels, best_price) = match side {
             Side::Bid => (&self.bids, self.best_bid),
@@ -299,6 +301,7 @@ impl OrderBook {
     /// # Returns
     /// * `Some(Decimal)` - The highest bid price with orders
     /// * `None` - If there are no bid orders
+    #[inline]
     pub fn best_bid(&self) -> Option<Decimal> {
         self.best_bid
     }
@@ -308,6 +311,7 @@ impl OrderBook {
     /// # Returns
     /// * `Some(Decimal)` - The lowest ask price with orders
     /// * `None` - If there are no ask orders
+    #[inline]
     pub fn best_ask(&self) -> Option<Decimal> {
         self.best_ask
     }
@@ -354,6 +358,7 @@ impl OrderBook {
     /// # Returns
     /// * `Some(&Order)` - Reference to the best bid order (highest price)
     /// * `None` - If there are no bid orders
+    #[inline]
     pub fn get_best_bid(&self) -> Option<&Order> {
         self.peek_best_order(Side::Bid)
     }
@@ -363,6 +368,7 @@ impl OrderBook {
     /// # Returns
     /// * `Some(&Order)` - Reference to the best ask order (lowest price)
     /// * `None` - If there are no ask orders
+    #[inline]
     pub fn get_best_ask(&self) -> Option<&Order> {
         self.peek_best_order(Side::Ask)
     }
