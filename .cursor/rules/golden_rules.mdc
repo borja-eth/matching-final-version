@@ -1,0 +1,16 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+1. Must use Rust's ownership model to obtain rust memory safety.
+2. Use atomic operations for shared state instead of locks where possible.
+3. Enforce #![deny(unsafe_code)] unless explicitly needed and justified.
+4. Use Result<T, E> and define domain-specific error enums using thiserror.
+5. Never use panic, unwrap, or expect outside initialization.
+6. Use enum with pattern matching rather than dynamic dispatch where possible.
+7. Use rust traits for dependency inversion: higher layers depend on traits, not concrete implementations.
+8. Avoid implicit conversions, use From/Into explicitly.
+Extra rule:
+9. Every public function/type/module must have a /// doc comment
+10. Code must always be as raw, simple, short and high performing as possible.

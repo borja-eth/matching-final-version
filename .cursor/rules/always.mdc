@@ -1,0 +1,146 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+## Module Structure
+
+-   Organize code into logical modules using Rust's module system
+-   Create a clear hierarchy with `mod` declarations in your `lib.rs` or `main.rs`
+-   Use the `pub` keyword deliberately, exposing only what is necessary
+
+## File Structure
+
+-   Use single file per module when possible
+-   For larger modules, create a directory with `mod.rs` and submodule files
+-   Place unit tests in the same file as the code they test, using `#[cfg(test)]` module
+-   Place integration tests in a separate `tests/` directory
+
+## Code Documentation
+
+-   Document all public items with `///` doc comments
+-   Include examples in documentation for complex functions
+-   Use Markdown formatting in doc comments for readability
+-   Add `#[doc]` attributes for module-level documentation
+
+## Comments
+
+-   Use `//` for implementation comments that explain "why" not "what"
+-   Break complex algorithms into steps with comments
+-   Add TODO comments for future improvements with specific details
+-   Use `#[allow(dead_code)]` sparingly and with justification comments
+
+## Naming Conventions
+
+-   Follow Rust's standard naming conventions:
+    -   `snake_case` for functions, methods, variables, and modules
+    -   `CamelCase` for types, traits, and enums
+    -   `SCREAMING_SNAKE_CASE` for constants and static variables
+-   Use descriptive, intention-revealing names
+-   Prefix boolean variables with verbs like `is_`, `has_`, or `should_`
+
+## Error Types
+
+-   Define custom error types for your modules/crates
+-   Implement `std::error::Error` for all error types
+-   Use `thiserror` for deriving error implementations
+-   Describe each error after deriving error implementations
+
+## Result Handling
+
+-   Use the `?` operator for propagating errors
+-   Avoid `.unwrap()` and `.expect()` in production code
+-   Convert between error types with the `From` trait or `map_err`
+-   Handle all error cases explicitly in public API functions
+
+## Strong Typing
+
+-   Create newtype wrappers for primitive types with domain meaning
+-   Use enums for representing states with finite values
+-   Leverage the type system to prevent logical errors
+-   Use generics and traits for creating flexible interfaces
+
+## Rust Idioms
+
+-   Use `Option` for values that might be absent
+-   Prefer pattern matching over if-let for complex conditions
+-   Use `match` with exhaustive patterns
+-   Leverage type inference where it improves readability
+
+## Ownership and Borrowing
+
+-   Understand and respect Rust's ownership model
+-   Use `move` closures to transfer ownership
+-   Use `Copy` types for simple data structures
+-   Use `Copy` for small, simple types (e.g., integers, booleans)
+-   Use references (`&T` and `&mut T`) to avoid unnecessary cloning
+-   Understand that only one mutable reference can be hold at a time
+-   Understand that mutable references cannot coexist with immutable references
+-   Implement `Clone` only when necessary
+-   Use smart pointers like `Box`, `Rc`, and `Arc` appropriately
+-   Do not use `unsafe` code unless absolutely necessary
+-   Do not use raw pointers or memory module unless absolutely necessary
+
+## Lifetimes
+
+-   Explicitly annotate lifetimes when the compiler needs help
+-   Use lifetime elision when possible
+-   Design APIs to minimize complex lifetime annotations
+-   Understand the 'static lifetime and use it appropriately
+
+## Thread Safety
+
+-   Use `std::sync` primitives for shared state (`Mutex`, `RwLock`)
+-   Prefer message passing with channels where appropriate
+-   Use `Arc` for sharing data between threads
+-   Use channels to communicate between threads or share memory
+-   Avoid global mutable state
+-   Consider async/await for IO-bound operations
+-   Try to structure code to avoid Mutex or RwLock. Prefer local state.
+
+## Async Programming
+
+-   Use `tokio` or `async-std` for async runtime
+-   Structure async code with proper error handling
+-   Use `.await` points strategically to allow concurrency
+-   Consider using local executors instead of multi-threading executors
+-   Consider using `futures` combinators for complex async flows
+-   Do not use a lot of Mutexes or RwLock, choose simplicity
+
+## Unit Testing
+
+-   Write tests for all public functions and complex private functions
+-   Use descriptive test names following `should_behavior_when_condition` pattern
+-   Use test fixtures and setup functions for complex test scenarios
+-   Test edge cases and error conditions explicitly
+-   Use `#[cfg(test)]` to include test code in the same file as the module
+-   Use `#[test]` attribute for unit tests
+-   Do not mock dependencies in unit tests; test the real implementation
+
+## Integration Testing
+
+-   Write integration tests for critical system paths
+-   Use `#[cfg(test)]` modules in separate files under `tests/`
+-   Mock external dependencies when necessary
+-   Test realistic user scenarios
+
+## Cargo Configuration
+
+-   Organize your `Cargo.toml` with clear sections for dependencies
+-   Use semantic versioning for dependencies
+-   Configure features for optional functionality
+-   Set up development dependencies
+
+## Recommended Crates
+
+-   **Web**: actix-web
+-   **HTTP Client**: reqwest
+-   **Serialization**: serde, serde_json
+-   **Database**: sqlx
+-   **Async**: tokio, futures. Always use tokio with all enabled features.
+-   **Error Handling**: thiserror
+-   **Logging**: tracing, log + env_logger
+
+## Crate Selection Guidelines
+
+-   Consider compilation time impact for large dependencies

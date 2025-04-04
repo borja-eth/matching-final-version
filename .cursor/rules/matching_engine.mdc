@@ -1,0 +1,45 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Rule Name: matching_engine_perf.mdc
+Description: Best practices for building high-performance Rust matching engines.
+
+## Performance Optimization
+
+*   **Mandatory Benchmarking**: Use `cargo bench` for all core logic (order add/cancel, matching). Benchmarks must measure latency (p99) and throughput under realistic load.
+*   **Mandatory Profiling**: Identify bottlenecks using profiling tools (`perf`, `flamegraph`, `tracing`) before attempting optimization. Document findings.
+*   **Minimize Heap Allocations**: Avoid heap allocations (`Box`, `Vec`, `String`) in the hot path (matching loop). Prefer stack allocation or pre-allocation.
+*   **Avoid Unnecessary Cloning**: Aggressively use references (`&`, `&mut`) and lifetimes. Understand `Copy` vs `Clone` implications for frequently used types.
+*   **Inlining**: Use `#[inline]` judiciously for small, hot functions identified by profiling. Do not guess. Rely primarily on compiler optimizations.
+
+## Data Structure Selection
+
+*   **Performance-Critical Choices**: Carefully select standard library collections (`BTreeMap`, `HashMap`, `VecDeque`, `Vec`) based on measured performance for order book levels, order storage, etc. Document the rationale.
+*   **Justify Custom Structures**: Use specialized collection crates or custom data structures *only* if standard types are proven bottlenecks via benchmarks.
+
+## Concurrency and State Management
+
+*   **Explicit Concurrency Model**: Document the chosen concurrency strategy (single-threaded core, sharding, etc.) and its trade-offs.
+*   **Minimize Shared Mutable State**: Strongly prefer message passing (`tokio::sync::mpsc`, `crossbeam-channel`) over locks (`Mutex`, `RwLock`) for inter-thread communication.
+*   **Short Lock Critical Sections**: If locks are unavoidable, ensure critical sections are minimal. Profile for lock contention.
+*   **Consider Lock-Free (Carefully)**: Evaluate lock-free structures only if lock contention is a proven, significant bottleneck and the complexity is justified.
+*   **Atomic State Updates**: Ensure updates to the order book and trade logs are atomic. Use transactions or appropriate primitives.
+*   **Event Sourcing Performance**: If using event sourcing, ensure log persistence does not bottleneck the matching process. Consider batching or asynchronous logging.
+
+## Data Types and Numerical Precision
+
+*   **No Standard Floats for Values**: Prohibit `f32`/`f64` for prices and quantities.
+*   **Mandatory Fixed-Point/Scaled Integers**: Use a reliable decimal type (`rust_decimal`) or scaled integers for all price/quantity representation. Define precision requirements clearly.
+
+## Error Handling in Hot Paths
+
+*   **Efficient Hot-Path Errors**: Avoid complex error creation/propagation or allocations *within* the core matching loop. Use simple enums or codes if necessary, converting outside the hot path.
+*   **Defer Non-Critical Reporting**: Logging or notification related to errors within the matching logic should be deferred or handled asynchronously to minimize latency impact.
+
+## `unsafe` Code Policy
+
+*   **Strict Justification**: `unsafe` is only permissible for performance optimizations proven essential by profiling, where no safe alternative exists.
+*   **Encapsulation and Documentation**:  `unsafe` block is prohibited.
+

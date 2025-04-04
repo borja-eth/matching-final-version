@@ -1,0 +1,91 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Always keep code well documented.
+Also, always in the beginning of files, list with ASCII tables the: Structs, Traits, ENUMS, Functions, immuts, muts, and a list of the tests.
+Here's how a well-documented function might look according to the rules:
+use std::io;
+
+/// Represents errors that can occur while processing order data.
+#[derive(Debug, thiserror::Error)]
+pub enum OrderProcessingError {
+    /// The provided order ID was not found.
+    #[error("Order ID '{0}' not found")]
+    NotFound(String),
+
+    /// An underlying I/O error occurred.
+    #[error("I/O error: {0}")]
+    Io(#[from] io::Error),
+
+    /// The order quantity exceeds the maximum allowed limit.
+    #[error("Order quantity {0} exceeds limit {1}")]
+    QuantityTooLarge(u64, u64),
+}
+
+/// Attempts to retrieve and validate an order based on its ID.
+///
+/// This function searches the persistent order store for the given `order_id`.
+/// If found, it validates the order details against predefined business rules,
+/// such as maximum allowed quantity.
+///
+/// # Arguments
+///
+/// * `order_id` - A string slice that uniquely identifies the order to retrieve.
+/// * `max_quantity` - The maximum quantity allowed for an order to be considered valid.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the order is found and valid according to the `max_quantity` limit.
+///
+/// # Errors
+///
+/// Returns `Err` variant of `OrderProcessingError` if:
+/// * The order specified by `order_id` cannot be found (`OrderProcessingError::NotFound`).
+/// * An I/O error occurs while accessing the order store (`OrderProcessingError::Io`).
+/// * The order's quantity exceeds `max_quantity` (`OrderProcessingError::QuantityTooLarge`).
+///
+/// # Examples
+///
+/// ```rust
+/// # use std::io;
+/// # // Mock error and function for doctest
+/// # #[derive(Debug, thiserror::Error)]
+/// # pub enum OrderProcessingError {
+/// #     #[error("Order ID '{0}' not found")] NotFound(String),
+/// #     #[error("I/O error: {0}")] Io(#[from] io::Error),
+/// #     #[error("Order quantity {0} exceeds limit {1}")] QuantityTooLarge(u64, u64),
+/// # }
+/// # fn find_and_validate_order(order_id: &str, max_quantity: u64) -> Result<(), OrderProcessingError> {
+/// #     if order_id == "valid123" && max_quantity >= 100 { Ok(()) }
+/// #     else if order_id == "too_large" { Err(OrderProcessingError::QuantityTooLarge(150, 100)) }
+/// #     else { Err(OrderProcessingError::NotFound(order_id.to_string())) }
+/// # }
+/// // Assuming an order "valid123" exists and has quantity <= 100
+/// match find_and_validate_order("valid123", 100) {
+///     Ok(_) => println!("Order validated successfully!"),
+///     Err(e) => eprintln!("Failed to validate order: {}", e),
+/// }
+///
+/// // Example of handling a not found error
+/// match find_and_validate_order("unknown999", 100) {
+///     Err(OrderProcessingError::NotFound(id)) => println!("Order {} was not found.", id),
+///     _ => {}, // Handle other cases
+/// }
+/// ```
+pub fn find_and_validate_order(order_id: &str, max_quantity: u64) -> Result<(), OrderProcessingError> {
+    // --- Implementation details ---
+    // 1. Query database/store for order_id
+    // 2. Handle potential I/O errors
+    // 3. If found, check order.quantity against max_quantity
+    // 4. Return Ok(()) or appropriate Err variant
+    // --- Placeholder implementation ---
+    println!("Attempting to validate order: {} with max quantity: {}", order_id, max_quantity);
+    match order_id {
+        "valid123" if max_quantity >= 50 => Ok(()),
+        "valid123" => Err(OrderProcessingError::QuantityTooLarge(50, max_quantity)), // Example value
+        "io_error" => Err(OrderProcessingError::Io(io::Error::new(io::ErrorKind::Other, "simulated I/O error"))),
+        _ => Err(OrderProcessingError::NotFound(order_id.to_string())),
+    }
+}
