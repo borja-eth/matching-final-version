@@ -27,11 +27,12 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use thiserror::Error; // Added early for consistency, though errors defined later
 use uuid::Uuid;
+use serde::{Serialize, Deserialize};
 
 
 /// Represents the side of an order (Buy or Sell).
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
     /// A buy order.
     Bid,
@@ -42,7 +43,7 @@ pub enum Side {
 /// Represents the type of an order, influencing its matching behavior.
 /// Maps to order types defined in `@roxom.md`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderType {
     /// An order that executes at a specific price or better.
     Limit,
@@ -59,7 +60,7 @@ pub enum OrderType {
 /// Represents the lifecycle status of an order within the matching engine.
 /// Maps to statuses defined in `@roxom.md`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderStatus {
     // Roxom Gateway Statuses (May not be directly stored/used in matching engine core)
     // PendingNew,
@@ -83,7 +84,7 @@ pub enum OrderStatus {
 }
 
 /// Defines how long an order remains active in the order book.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 #[allow(dead_code)]
 pub enum TimeInForce {
@@ -102,7 +103,7 @@ impl Default for TimeInForce {
 /// Specifies the price type used to evaluate the trigger condition for conditional orders.
 /// Defined in `@roxom.md`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TriggerType {
     /// Trigger is evaluated against the last traded price.
     LastPrice,
@@ -112,7 +113,7 @@ pub enum TriggerType {
 /// Indicates the origin system or interface that created the order.
 /// Defined in `@roxom.md`.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CreatedFrom {
     /// Order created via an API client.
     Api,
@@ -133,7 +134,7 @@ pub enum CreatedFrom {
 
 /// Represents a trading order, based on `@roxom.md`.
 /// Uses Decimal for price/quantity precision.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Order {
     /// Unique identifier for the order (internal).
     pub id: Uuid,
@@ -182,7 +183,7 @@ pub struct Order {
 }
 
 /// Represents a completed trade resulting from matching two orders.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Trade {
     /// Unique identifier for the trade.
     pub id: Uuid,

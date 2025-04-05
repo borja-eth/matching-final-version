@@ -53,6 +53,7 @@ use chrono::Utc;
 use crate::orderbook::OrderBook;
 use crate::types::{Order, Side, OrderType, OrderStatus, Trade, TimeInForce};
 use crate::depth::DepthTracker;
+use crate::events::{EventBus, MatchingEngineEvent};
 
 /// Errors that can occur during the matching process.
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -107,6 +108,9 @@ pub struct MatchingEngine {
 
     /// Depth tracker for maintaining aggregated order book view
     depth_tracker: DepthTracker,
+    
+    /// Event bus for emitting events (optional)
+    event_bus: Option<EventBus>,
 }
 
 impl MatchingEngine {
@@ -119,6 +123,19 @@ impl MatchingEngine {
             next_sequence_id: 1,
             instrument_id,
             depth_tracker: DepthTracker::new(instrument_id),
+            event_bus: None,
+        }
+    }
+    
+    /// Creates a new matching engine with an event bus.
+    pub fn with_event_bus(instrument_id: Uuid, event_bus: EventBus) -> Self {
+        Self {
+            order_book: OrderBook::new(instrument_id),
+            order_index: HashMap::new(),
+            next_sequence_id: 1,
+            instrument_id,
+            depth_tracker: DepthTracker::new(instrument_id),
+            event_bus: Some(event_bus),
         }
     }
     
@@ -141,29 +158,36 @@ impl MatchingEngine {
         }
         
         // Use specialized paths based on order type and time in force
-        match (order.order_type, time_in_force) {
+        let result = match (order.order_type, time_in_force) {
             // Limit orders with GTC (most common case)
             (OrderType::Limit, TimeInForce::GTC) => {
-                return self.process_limit_gtc_order(order);
+                self.process_limit_gtc_order(order)
             },
             // Limit orders with IOC
             (OrderType::Limit, TimeInForce::IOC) => {
-                return self.process_limit_ioc_order(order);
+                self.process_limit_ioc_order(order)
             },
             // Market orders (always treated as IOC)
             (OrderType::Market, _) => {
                 order.limit_price = None;
-                return self.process_market_order(order);
+                self.process_market_order(order)
             },
             // Stop orders
             (OrderType::Stop, time_in_force) => {
-                return self.process_stop_order(order, time_in_force);
+                self.process_stop_order(order, time_in_force)
             },
             // StopLimit orders
             (OrderType::StopLimit, time_in_force) => {
-                return self.process_stop_limit_order(order, time_in_force);
+                self.process_stop_limit_order(order, time_in_force)
             }
+        };
+        
+        // Emit events based on the result
+        if let Ok(ref match_result) = result {
+            self.emit_events_for_match_result(match_result);
         }
+        
+        result
     }
 
     /// Specialized method for processing limit orders with GTC time in force.
@@ -461,6 +485,17 @@ impl MatchingEngine {
                 } else {
                     order.status = OrderStatus::Cancelled;
                 }
+                
+                // Emit cancel event
+                if let Some(ref event_bus) = self.event_bus {
+                    let cancel_event = MatchingEngineEvent::OrderCancelled {
+                        order: order.clone(),
+                        timestamp: Utc::now(),
+                    };
+                    
+                    let _ = event_bus.publish(cancel_event);
+                }
+                
                 return Ok(order);
             }
         }
@@ -478,6 +513,61 @@ impl MatchingEngine {
         self.instrument_id
     }
 
+    /// Emits events based on the matching result
+    fn emit_events_for_match_result(&self, result: &MatchResult) {
+        if let Some(ref event_bus) = self.event_bus {
+            // Emit events for trades
+            for trade in &result.trades {
+                let trade_event = MatchingEngineEvent::TradeExecuted {
+                    trade: trade.clone(),
+                    timestamp: Utc::now(),
+                };
+                
+                let _ = event_bus.publish(trade_event);
+            }
+            
+            // Emit event for the processed order
+            if let Some(ref order) = result.processed_order {
+                let order_event = match order.status {
+                    OrderStatus::New => MatchingEngineEvent::OrderAdded {
+                        order: order.clone(),
+                        timestamp: Utc::now(),
+                    },
+                    OrderStatus::PartiallyFilled | OrderStatus::Filled => {
+                        MatchingEngineEvent::OrderMatched {
+                            order: order.clone(),
+                            matched_quantity: order.filled_base,
+                            timestamp: Utc::now(),
+                        }
+                    },
+                    OrderStatus::Cancelled | OrderStatus::PartiallyFilledCancelled => {
+                        MatchingEngineEvent::OrderCancelled {
+                            order: order.clone(),
+                            timestamp: Utc::now(),
+                        }
+                    },
+                    _ => return, // No event for other statuses
+                };
+                
+                let _ = event_bus.publish(order_event);
+            }
+            
+            // Emit events for affected orders
+            for order in &result.affected_orders {
+                let affected_event = MatchingEngineEvent::OrderMatched {
+                    order: order.clone(),
+                    matched_quantity: order.filled_base,
+                    timestamp: Utc::now(),
+                };
+                
+                let _ = event_bus.publish(affected_event);
+            }
+            
+            // We can't mutably borrow depth_tracker here, so we'll skip the depth event
+            // The depth event will still be emitted when get_depth() is called
+        }
+    }
+    
     /// Gets a depth snapshot from the order book
     ///
     /// # Arguments
@@ -486,7 +576,19 @@ impl MatchingEngine {
     /// # Returns
     /// A snapshot of the current order book depth
     pub fn get_depth(&mut self, limit: usize) -> crate::depth::DepthSnapshot {
-        self.depth_tracker.get_snapshot(limit)
+        let snapshot = self.depth_tracker.get_snapshot(limit);
+        
+        // Emit depth update event
+        if let Some(ref event_bus) = self.event_bus {
+            let depth_event = MatchingEngineEvent::DepthUpdated {
+                depth: snapshot.clone(),
+                timestamp: Utc::now(),
+            };
+            
+            let _ = event_bus.publish(depth_event);
+        }
+        
+        snapshot
     }
 }
 
@@ -1286,5 +1388,180 @@ mod tests {
         
         let result2 = engine.process_order(stop_limit_order2, TimeInForce::GTC);
         assert!(matches!(result2, Err(MatchingError::InvalidOrder(_))));
+    }
+    
+    // === EVENT SYSTEM INTEGRATION TESTS ===
+    
+    #[tokio::test]
+    async fn test_event_integration() {
+        use tokio::sync::Mutex;
+        use std::sync::Arc;
+        use crate::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
+        
+        // Create a simple event collector
+        struct EventCollector {
+            events: Mutex<Vec<MatchingEngineEvent>>,
+        }
+        
+        #[async_trait::async_trait]
+        impl EventHandler for EventCollector {
+            fn event_types(&self) -> Vec<&'static str> {
+                vec![
+                    "OrderAdded", 
+                    "OrderMatched", 
+                    "OrderCancelled", 
+                    "TradeExecuted",
+                    "DepthUpdated"
+                ]
+            }
+            
+            async fn handle_event(&self, event: MatchingEngineEvent) -> EventResult<()> {
+                let mut events = self.events.lock().await;
+                events.push(event);
+                Ok(())
+            }
+        }
+        
+        // Setup test
+        let instrument_id = Uuid::new_v4();
+        let event_bus = EventBus::default();
+        let collector = Arc::new(EventCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        
+        // Create the dispatcher and register the collector
+        let dispatcher = crate::events::EventDispatcher::new(event_bus.clone());
+        dispatcher.register_handler(collector.clone()).await;
+        let _handle = dispatcher.start().await;
+        
+        // Create the matching engine with the event bus
+        let mut engine = MatchingEngine::with_event_bus(instrument_id, event_bus);
+        
+        // Process an order
+        let order = create_test_order(
+            Side::Bid, 
+            OrderType::Limit, 
+            Some(dec!(100.0)), 
+            dec!(1.0),
+            instrument_id
+        );
+        
+        engine.process_order(order, TimeInForce::GTC).unwrap();
+        
+        // Get depth to trigger DepthUpdated event
+        engine.get_depth(10);
+        
+        // Allow time for events to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // Check collected events
+        let events = collector.events.lock().await;
+        
+        // Should have at least 2 events: OrderAdded and DepthUpdated
+        assert!(events.len() >= 2);
+        
+        // Verify we have the right event types
+        let mut has_order_added = false;
+        let mut has_depth_updated = false;
+        
+        for event in events.iter() {
+            match event {
+                MatchingEngineEvent::OrderAdded { .. } => has_order_added = true,
+                MatchingEngineEvent::DepthUpdated { .. } => has_depth_updated = true,
+                _ => {}
+            }
+        }
+        
+        assert!(has_order_added, "Missing OrderAdded event");
+        assert!(has_depth_updated, "Missing DepthUpdated event");
+    }
+    
+    #[tokio::test]
+    async fn test_event_trade_execution() {
+        use tokio::sync::Mutex;
+        use std::sync::Arc;
+        use crate::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
+        
+        // Create a simple event collector
+        struct EventCollector {
+            events: Mutex<Vec<MatchingEngineEvent>>,
+        }
+        
+        #[async_trait::async_trait]
+        impl EventHandler for EventCollector {
+            fn event_types(&self) -> Vec<&'static str> {
+                vec![
+                    "OrderAdded", 
+                    "OrderMatched", 
+                    "OrderCancelled", 
+                    "TradeExecuted",
+                    "DepthUpdated"
+                ]
+            }
+            
+            async fn handle_event(&self, event: MatchingEngineEvent) -> EventResult<()> {
+                let mut events = self.events.lock().await;
+                events.push(event);
+                Ok(())
+            }
+        }
+        
+        // Setup test
+        let instrument_id = Uuid::new_v4();
+        let event_bus = EventBus::default();
+        let collector = Arc::new(EventCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        
+        // Create the dispatcher and register the collector
+        let dispatcher = crate::events::EventDispatcher::new(event_bus.clone());
+        dispatcher.register_handler(collector.clone()).await;
+        let _handle = dispatcher.start().await;
+        
+        // Create the matching engine with the event bus
+        let mut engine = MatchingEngine::with_event_bus(instrument_id, event_bus);
+        
+        // Add a GTC sell order
+        let sell_order = create_test_order(
+            Side::Ask, 
+            OrderType::Limit, 
+            Some(dec!(100.0)), 
+            dec!(1.0),
+            instrument_id
+        );
+        
+        engine.process_order(sell_order, TimeInForce::GTC).unwrap();
+        
+        // Add a matching buy order to generate a trade
+        let buy_order = create_test_order(
+            Side::Bid, 
+            OrderType::Limit, 
+            Some(dec!(100.0)), 
+            dec!(1.0),
+            instrument_id
+        );
+        
+        engine.process_order(buy_order, TimeInForce::GTC).unwrap();
+        
+        // Allow time for events to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // Check collected events
+        let events = collector.events.lock().await;
+        
+        // Verify we have a trade execution event
+        let mut has_trade_executed = false;
+        let mut has_order_matched = false;
+        
+        for event in events.iter() {
+            match event {
+                MatchingEngineEvent::TradeExecuted { .. } => has_trade_executed = true,
+                MatchingEngineEvent::OrderMatched { .. } => has_order_matched = true,
+                _ => {}
+            }
+        }
+        
+        assert!(has_trade_executed, "Missing TradeExecuted event");
+        assert!(has_order_matched, "Missing OrderMatched event");
     }
 }

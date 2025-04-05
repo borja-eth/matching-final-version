@@ -176,5 +176,59 @@ fn matching_engine_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, orderbook_benchmark, matching_engine_benchmark);
-criterion_main!(benches); 
+// Function to print TPS estimates after benchmarks
+fn print_tps_estimates() {
+    println!("\n======= BENCHMARK RESULTS (TPS) =======");
+    
+    // Try to read and process each benchmark result
+    let bench_dirs = [
+        "target/criterion/matching_engine_operations/process_matching_order",
+        "target/criterion/orderbook_operations/add_order",
+        "target/criterion/orderbook_operations/remove_order",
+        "target/criterion/orderbook_operations/get_best_prices",
+        "target/criterion/orderbook_operations/get_best_bid_and_ask",
+    ];
+    
+    for dir in bench_dirs {
+        let file_path = format!("{}/new/estimates.json", dir);
+        match std::fs::read_to_string(&file_path) {
+            Ok(content) => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(mean) = json.get("mean").and_then(|m| m.get("point_estimate")).and_then(|p| p.as_f64()) {
+                        let ns_per_op = mean;
+                        let tps = if ns_per_op > 0.0 { 1_000_000_000.0 / ns_per_op } else { 0.0 };
+                        
+                        // Extract operation name from directory
+                        let parts: Vec<&str> = dir.split('/').collect();
+                        let op_name = if parts.len() >= 3 { parts[parts.len() - 2] } else { "unknown" };
+                        
+                        println!("• {}: {:.2} TPS ({:.2} ns/op)", op_name, tps, ns_per_op);
+                    }
+                }
+            }
+            Err(_) => {
+                // File not found or couldn't be read - might not have been run yet
+            }
+        }
+    }
+    
+    println!("========================================\n");
+}
+
+criterion_group! {
+    name = benches;
+    config = Criterion::default();
+    targets = orderbook_benchmark, matching_engine_benchmark
+}
+
+criterion_main! {
+    benches
+}
+
+// Print TPS estimates whenever this module is loaded
+#[ctor::ctor]
+fn print_tps() {
+    // Add a small delay to ensure criterion has time to write results
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    print_tps_estimates();
+} 

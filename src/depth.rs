@@ -38,11 +38,12 @@ use std::sync::Arc;
 use rust_decimal::Decimal;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use serde::{Serialize, Deserialize};
 
 use crate::types::{Order, Side};
 
 /// Newtype wrapper for price to provide type safety and semantic meaning
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Price(Decimal);
 
 impl Price {
@@ -60,7 +61,7 @@ impl Price {
 }
 
 /// Represents an aggregated price level in the depth view
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PriceLevel {
     /// The price for this level
     pub price: Decimal,
@@ -93,7 +94,7 @@ impl PriceLevel {
 }
 
 /// An immutable snapshot of order book depth at a specific point in time
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepthSnapshot {
     /// Bid price levels ordered by price descending (best bids first)
     pub bids: Vec<PriceLevel>,
