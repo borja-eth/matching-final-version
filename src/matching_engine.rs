@@ -313,7 +313,7 @@ impl MatchingEngine {
     ///
     /// # Returns
     /// A `MatchResult` containing the trades generated
-    #[inline]
+    #[inline(always)]
     fn match_order(&mut self, order: &mut Order) -> MatchingResult<MatchResult> {
         let mut result = MatchResult::default();
         
@@ -324,7 +324,8 @@ impl MatchingEngine {
         };
         
         // Pre-extract the limit price for efficiency if this is a limit order
-        let limit_price = if order.order_type == OrderType::Limit {
+        let is_limit_order = order.order_type == OrderType::Limit;
+        let limit_price = if is_limit_order {
             match order.limit_price {
                 Some(price) => price,
                 None => return Err(MatchingError::InvalidOrder("Limit order must have a price".to_string())),
@@ -334,17 +335,36 @@ impl MatchingEngine {
         };
         
         // Pre-allocate trades vector to reduce allocations in the hot path
-        result.trades.reserve(8); // Reasonable assumption for average match count
+        result.trades.reserve(8);
         result.affected_orders.reserve(8);
+        
+        // OPTIMIZATION 1: Reuse Trade object to reduce allocations
+        let mut trade = Trade {
+            id: Uuid::nil(),
+            instrument_id: self.instrument_id,
+            maker_order_id: Uuid::nil(),
+            taker_order_id: order.id,
+            base_amount: Decimal::ZERO,
+            quote_amount: Decimal::ZERO,
+            price: Decimal::ZERO,
+            created_at: Utc::now(),
+        };
+        
+        // OPTIMIZATION 2: Batch depth tracker and index updates
+        let mut removals = Vec::with_capacity(8);
+        let mut additions = Vec::with_capacity(8);
+        
+        let mut remaining_base = order.remaining_base;
+        let is_market_order = order.order_type == OrderType::Market;
+        
+        // Early check for filled status
+        if remaining_base.is_zero() {
+            order.status = OrderStatus::Filled;
+            return Ok(result);
+        }
         
         // Keep matching until the order is filled or no more matches are possible
         loop {
-            // Exit if order is fully filled
-            if order.remaining_base.is_zero() {
-                order.status = OrderStatus::Filled;
-                break;
-            }
-            
             // Get the best opposing order - only do this lookup once per iteration
             let best_opposing_order = match opposite_side {
                 Side::Bid => self.order_book.get_best_bid(),
@@ -365,7 +385,7 @@ impl MatchingEngine {
             };
             
             // For limit orders, check if the price is acceptable
-            if order.order_type == OrderType::Limit {
+            if is_limit_order {
                 // Use the cached limit price
                 let price_acceptable = match order.side {
                     Side::Bid => opposing_price <= limit_price, // Buy: best ask <= my bid
@@ -387,32 +407,25 @@ impl MatchingEngine {
                 None => return Err(MatchingError::OrderNotFound(opposing_id)),
             };
             
-            // Remove from our index
-            self.order_index.remove(&opposing_id);
-            
-            // Update depth tracker for removed order
-            self.depth_tracker.update_order_removed(&opposing_order);
+            // Add to removals for batch processing
+            removals.push(opposing_order.clone());
             
             // Calculate matched quantity
-            let matched_qty = Decimal::min(order.remaining_base, opposing_order.remaining_base);
+            let matched_qty = Decimal::min(remaining_base, opposing_order.remaining_base);
             
             // Calculate quote amount using the previously obtained opposing price
             let quote_amount = matched_qty * opposing_price;
             
-            // Create trade record
-            let trade = Trade {
-                id: Uuid::new_v4(),
-                instrument_id: self.instrument_id,
-                maker_order_id: opposing_id,
-                taker_order_id: order.id,
-                base_amount: matched_qty,
-                quote_amount,
-                price: opposing_price,
-                created_at: Utc::now(),
-            };
+            // Update trade object without creating a new one
+            trade.id = Uuid::new_v4();
+            trade.maker_order_id = opposing_id;
+            trade.base_amount = matched_qty;
+            trade.quote_amount = quote_amount;
+            trade.price = opposing_price;
+            trade.created_at = Utc::now();
             
             // Update order states
-            order.remaining_base -= matched_qty;
+            remaining_base -= matched_qty;
             order.filled_base += matched_qty;
             order.filled_quote += quote_amount;
             
@@ -420,11 +433,8 @@ impl MatchingEngine {
             opposing_order.filled_base += matched_qty;
             opposing_order.filled_quote += quote_amount;
             
-            // Update depth for matched quantities
-            self.depth_tracker.update_order_matched(&opposing_order, matched_qty);
-            
             // Update order statuses
-            if order.status == OrderStatus::New && !order.remaining_base.is_zero() {
+            if order.status == OrderStatus::New && !remaining_base.is_zero() {
                 order.status = OrderStatus::PartiallyFilled;
             }
             
@@ -432,19 +442,43 @@ impl MatchingEngine {
                 opposing_order.status = OrderStatus::Filled;
             } else {
                 opposing_order.status = OrderStatus::PartiallyFilled;
-                // Put partially filled order back in the book
-                self.add_to_book(&opposing_order);
+                additions.push(opposing_order.clone());
             }
             
             // Record trade and affected order
-            result.trades.push(trade);
+            result.trades.push(trade.clone());
             result.affected_orders.push(opposing_order);
+            
+            // Exit if order is fully filled
+            if remaining_base.is_zero() {
+                order.status = OrderStatus::Filled;
+                break;
+            }
+        }
+        
+        // Update the order's remaining base amount
+        order.remaining_base = remaining_base;
+        
+        // Process batched updates - only if there were any matches
+        if !removals.is_empty() || !additions.is_empty() {
+            // Remove from index and update depth tracker for removed orders
+            for removed_order in &removals {
+                self.order_index.remove(&removed_order.id);
+                self.depth_tracker.update_order_removed(removed_order);
+            }
+            
+            // Add to book, update index and depth tracker for added orders
+            for added_order in &additions {
+                self.order_book.add_order(added_order.clone());
+                if let Some(price) = added_order.limit_price {
+                    self.order_index.insert(added_order.id, (added_order.side, price));
+                    self.depth_tracker.update_order_added(added_order);
+                }
+            }
         }
         
         // For market orders with no matches, return an error
-        if order.order_type == OrderType::Market && 
-           order.status == OrderStatus::New && 
-           result.trades.is_empty() {
+        if is_market_order && order.status == OrderStatus::New && result.trades.is_empty() {
             return Err(MatchingError::InsufficientLiquidity);
         }
         

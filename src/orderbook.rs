@@ -58,7 +58,7 @@ use rust_decimal::Decimal;
 use uuid::Uuid;
 
 // Import types from types.rs
-use crate::types::{Order, Side, OrderStatus};
+use crate::types::{Order, Side};
 
 /// Represents a price level in the order book, maintaining a FIFO queue of orders
 /// at the same price point.
@@ -372,6 +372,58 @@ impl OrderBook {
     pub fn get_best_ask(&self) -> Option<&Order> {
         self.peek_best_order(Side::Ask)
     }
+
+    /// Gets a reference to all orders at a certain price level.
+    ///
+    /// # Returns
+    /// A reference to the price level at the specified price, or None if no orders exist.
+    pub fn get_price_level(&self, side: Side, price: Decimal) -> Option<&PriceLevel> {
+        match side {
+            Side::Bid => self.bids.get(&price),
+            Side::Ask => self.asks.get(&price),
+        }
+    }
+    
+    /// Gets a batch of best opposing orders for efficient matching.
+    ///
+    /// # Arguments
+    /// * `side` - The side of orders to get (opposite of the incoming order)
+    /// * `limit` - Maximum number of price levels to return
+    ///
+    /// # Returns
+    /// A vector of price levels and their orders, sorted by price-time priority
+    pub fn get_best_opposing_levels(&self, side: Side, limit: usize) -> Vec<(Decimal, &PriceLevel)> {
+        let mut result = Vec::with_capacity(limit);
+        
+        match side {
+            Side::Bid => {
+                // For bids (buy orders), get highest prices first (descending)
+                for (price, level) in self.bids.iter().rev().take(limit) {
+                    if !level.orders.is_empty() {
+                        result.push((*price, level));
+                    }
+                    
+                    if result.len() >= limit {
+                        break;
+                    }
+                }
+            },
+            Side::Ask => {
+                // For asks (sell orders), get lowest prices first (ascending)
+                for (price, level) in self.asks.iter().take(limit) {
+                    if !level.orders.is_empty() {
+                        result.push((*price, level));
+                    }
+                    
+                    if result.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+        
+        result
+    }
 }
 
 #[cfg(test)]
@@ -407,7 +459,7 @@ mod tests {
     use rust_decimal_macros::dec;
     use crate::types::{OrderType, CreatedFrom};
     use chrono::Utc;
-
+    use crate::types::OrderStatus;
     /// Creates a test order with the specified parameters.
     ///
     /// # Arguments
