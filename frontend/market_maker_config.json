@@ -1,0 +1,15 @@
+{
+  "instrument_id": "b720ea48-e09b-41e0-82df-d9540bfb1d65",
+  "account_id": "7d16d05e-ccf9-4618-b678-6daba310011f",
+  "base_price": "100.0",
+  "spread_pct": "0.1",
+  "max_deviation_pct": "5.0",
+  "min_order_size": "0.01",
+  "max_order_size": "1.0",
+  "max_active_orders": 1000,
+  "cancel_rate": 0.3,
+  "orders_per_second": 1000,
+  "price_levels": 5,
+  "trend_factor": "0.05",
+  "volatility_factor": "2"
+}
