@@ -61,6 +61,14 @@ struct Args {
     /// Instrument ID to trade (required unless in config)
     #[arg(short, long)]
     instrument: Option<String>,
+    
+    /// Trend factor (percentage increase per second)
+    #[arg(short, long, default_value = "0.05")]
+    trend: f64,
+    
+    /// Volatility factor (percentage of random price movement)
+    #[arg(short, long, default_value = "2.0")]
+    volatility: f64,
 }
 
 /// Configuration for the market maker
@@ -98,6 +106,12 @@ pub struct MarketMakerConfig {
     
     /// Number of price levels to maintain
     pub price_levels: usize,
+    
+    /// Trend factor (percentage increase per second)
+    pub trend_factor: Decimal,
+    
+    /// Volatility factor (percentage of random price movement)
+    pub volatility_factor: Decimal,
 }
 
 impl MarketMakerConfig {
@@ -115,6 +129,8 @@ impl MarketMakerConfig {
             cancel_rate: 0.3,
             orders_per_second: 10000,
             price_levels: 5,
+            trend_factor: dec!(0.05), // 5% increase per second
+            volatility_factor: dec!(2.0), // 2% volatility
         }
     }
     
@@ -290,6 +306,15 @@ pub struct OrderGenerator {
     
     /// Random number generator
     rng: rand::rngs::ThreadRng,
+    
+    /// Trend factor (percentage increase per update)
+    trend_factor: Decimal,
+    
+    /// Volatility factor (percentage of random price movement)
+    volatility_factor: Decimal,
+    
+    /// Last update timestamp
+    last_update: Instant,
 }
 
 impl OrderGenerator {
@@ -297,14 +322,43 @@ impl OrderGenerator {
     pub fn new(config: MarketMakerConfig) -> Self {
         Self {
             current_price: config.base_price,
-            config,
+            config: config.clone(),
             rng: thread_rng(),
+            trend_factor: config.trend_factor,
+            volatility_factor: config.volatility_factor,
+            last_update: Instant::now(),
         }
     }
     
     /// Updates the current market price
     pub fn update_price(&mut self, price: Decimal) {
-        self.current_price = price;
+        // Calculate time elapsed since last update
+        let elapsed = self.last_update.elapsed().as_secs_f64();
+        self.last_update = Instant::now();
+        
+        // Apply trend (upward movement)
+        let trend_increase = self.trend_factor * DecimalExt::from_f64(elapsed).unwrap_or(Decimal::ZERO);
+        let trended_price = price * (Decimal::ONE + trend_increase);
+        
+        // Apply volatility (random up/down movement)
+        let volatility = self.add_volatility(trended_price);
+        
+        // Update the current price
+        self.current_price = volatility;
+    }
+    
+    /// Adds volatility to the price
+    fn add_volatility(&mut self, price: Decimal) -> Decimal {
+        // Generate a random value between -1.0 and 1.0
+        let rand_val = self.rng.gen_range(-1.0..1.0);
+        
+        // Calculate the volatility factor
+        let volatility_pct = self.volatility_factor.to_f64().unwrap_or(2.0);
+        let volatility_factor = rand_val * volatility_pct / 100.0;
+        
+        // Apply volatility to the price
+        let decimal_volatility = DecimalExt::from_f64(volatility_factor).unwrap_or(Decimal::ZERO);
+        price * (Decimal::ONE + decimal_volatility)
     }
     
     /// Adds random noise to the price
@@ -441,9 +495,11 @@ impl MarketMaker {
         
         // Track time to maintain order rate
         let mut last_update = Instant::now();
+        let mut last_price_update = Instant::now();
         let mut orders_sent = 0;
         let mut _cancels_sent = 0;
         let rate_window_ms = 1000;
+        let price_update_interval_ms = 5000; // Update price every 5 seconds
         
         loop {
             // Generate orders for this cycle
@@ -462,6 +518,13 @@ impl MarketMaker {
                 
                 // Sync market price occasionally
                 self.sync_market_price().await?;
+            }
+            
+            // Update price periodically to maintain trend
+            let price_elapsed_ms = last_price_update.elapsed().as_millis() as u64;
+            if price_elapsed_ms >= price_update_interval_ms {
+                self.update_price_trend().await?;
+                last_price_update = Instant::now();
             }
             
             // Calculate batch size based on target rate and time since last batch
@@ -540,14 +603,64 @@ impl MarketMaker {
         let bid = depth.bids.first().map(|level| level.price);
         let ask = depth.asks.first().map(|level| level.price);
         
-        if let (Some(bid), Some(ask)) = (bid, ask) {
+        // Get the current price from the order generator
+        let current_price = self.order_generator.current_price;
+        
+        // Calculate a new price based on market data and our trend
+        let new_price = if let (Some(bid), Some(ask)) = (bid, ask) {
+            // Use mid price as a reference point, but maintain our trend
             let mid_price = (bid + ask) / Decimal::from(2);
-            self.order_generator.update_price(mid_price);
+            
+            // If market price is significantly different from our trend, adjust gradually
+            let price_diff_pct = (mid_price - current_price).abs() / current_price * Decimal::from(100);
+            
+            if price_diff_pct > Decimal::from(10) {
+                // Market price is significantly different, blend it with our trend
+                // (70% our trend, 30% market price)
+                current_price * Decimal::from(7) / Decimal::from(10) + mid_price * Decimal::from(3) / Decimal::from(10)
+            } else {
+                // Market price is close to our trend, continue with our trend
+                current_price
+            }
         } else if let Some(bid) = bid {
-            self.order_generator.update_price(bid);
+            // Similar logic for bid-only case
+            let price_diff_pct = (bid - current_price).abs() / current_price * Decimal::from(100);
+            
+            if price_diff_pct > Decimal::from(10) {
+                current_price * Decimal::from(7) / Decimal::from(10) + bid * Decimal::from(3) / Decimal::from(10)
+            } else {
+                current_price
+            }
         } else if let Some(ask) = ask {
-            self.order_generator.update_price(ask);
-        }
+            // Similar logic for ask-only case
+            let price_diff_pct = (ask - current_price).abs() / current_price * Decimal::from(100);
+            
+            if price_diff_pct > Decimal::from(10) {
+                current_price * Decimal::from(7) / Decimal::from(10) + ask * Decimal::from(3) / Decimal::from(10)
+            } else {
+                current_price
+            }
+        } else {
+            // No market data, continue with our trend
+            current_price
+        };
+        
+        // Update the price with our trend and volatility
+        self.order_generator.update_price(new_price);
+        
+        Ok(())
+    }
+    
+    /// Updates the price trend without syncing with the market
+    async fn update_price_trend(&mut self) -> Result<()> {
+        // Get the current price
+        let current_price = self.order_generator.current_price;
+        
+        // Update the price with our trend and volatility
+        self.order_generator.update_price(current_price);
+        
+        // Log the price trend
+        println!("Price trend: {:.8}", self.order_generator.current_price);
         
         Ok(())
     }
@@ -790,6 +903,8 @@ async fn run_market_maker(args: Args) -> Result<()> {
     println!("Market Maker starting up...");
     println!("API URL: {}", args.api_url);
     println!("Target rate: {} orders/second", args.rate);
+    println!("Trend factor: {}%/second", args.trend);
+    println!("Volatility factor: {}%", args.volatility);
     
     // Initialize API client
     let api_client = ApiClient::new(&args.api_url);
@@ -797,6 +912,10 @@ async fn run_market_maker(args: Args) -> Result<()> {
     // Load or create config
     let config = if let Ok(mut config) = MarketMakerConfig::from_file(&args.config) {
         println!("Loaded configuration from {}", args.config);
+        
+        // Override trend and volatility with command-line arguments
+        config.trend_factor = DecimalExt::from_f64(args.trend).unwrap_or(dec!(0.05));
+        config.volatility_factor = DecimalExt::from_f64(args.volatility).unwrap_or(dec!(2.0));
         
         // Verify the instrument exists even when loaded from config
         if let Some(instrument_id) = config.instrument_id {
@@ -857,6 +976,8 @@ async fn run_market_maker(args: Args) -> Result<()> {
         
         let mut config = MarketMakerConfig::new(instrument_id, account_id);
         config.orders_per_second = args.rate;
+        config.trend_factor = DecimalExt::from_f64(args.trend).unwrap_or(dec!(0.05));
+        config.volatility_factor = DecimalExt::from_f64(args.volatility).unwrap_or(dec!(2.0));
         
         // Save the config for future use
         let config_json = serde_json::to_string_pretty(&config)?;

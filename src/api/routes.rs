@@ -39,7 +39,9 @@ use crate::types::TimeInForce;
 
 /// Health check endpoint
 pub async fn health() -> impl IntoResponse {
-    StatusCode::OK
+    Json(serde_json::json!({
+        "status": "ok"
+    }))
 }
 
 /// Create and process a new order

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   createChart,
   ColorType,
@@ -17,15 +17,19 @@ import {
   CandlestickSeries
 } from 'lightweight-charts';
 import { useApi } from '@/lib/api-context';
+import DepthChart from './depth-chart';
+
+type ChartType = 'Standard' | 'TradingView' | 'Depth';
 
 export default function PriceChart() {
+  const [chartType, setChartType] = useState<ChartType>('Standard');
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const { orderbook, selectedInstrument } = useApi();
   const candlesRef = useRef<CandlestickData[]>([]);
   const currentCandleRef = useRef<CandlestickData | null>(null);
   
   useEffect(() => {
-    if (!chartContainerRef.current || !orderbook || !selectedInstrument) return;
+    if (chartType === 'Depth' || !chartContainerRef.current || !orderbook || !selectedInstrument) return;
 
     const chartOptions: DeepPartial<ChartOptions> = {
       layout: {
@@ -135,7 +139,7 @@ export default function PriceChart() {
         
         candlestickSeries.update(currentCandleRef.current);
       }
-    }, 100); // Update more frequently for smoother animation
+    }, 100);
 
     // Handle window resize
     const handleResize = () => {
@@ -154,7 +158,7 @@ export default function PriceChart() {
       clearInterval(updateInterval);
       chart.remove();
     };
-  }, [orderbook, selectedInstrument]);
+  }, [orderbook, selectedInstrument, chartType]);
 
   return (
     <div className="h-[400px] w-full bg-[var(--bds-gray-bg-card)]">
@@ -168,13 +172,28 @@ export default function PriceChart() {
             <option>1d</option>
           </select>
           <div className="flex items-center gap-1">
-            <button className="h-6 px-2 text-[var(--bds-font-size-12)] bg-[var(--bds-gray-bg-float)] rounded text-[var(--bds-gray-t2)] hover:bg-[var(--bds-trans-hover)]">
+            <button 
+              className={`h-6 px-2 text-[var(--bds-font-size-12)] rounded text-[var(--bds-gray-t2)] hover:bg-[var(--bds-trans-hover)] ${
+                chartType === 'Standard' ? 'bg-[var(--bds-gray-bg-active)]' : 'bg-[var(--bds-gray-bg-float)]'
+              }`}
+              onClick={() => setChartType('Standard')}
+            >
               Standard
             </button>
-            <button className="h-6 px-2 text-[var(--bds-font-size-12)] bg-[var(--bds-gray-bg-float)] rounded text-[var(--bds-gray-t2)] hover:bg-[var(--bds-trans-hover)]">
+            <button 
+              className={`h-6 px-2 text-[var(--bds-font-size-12)] rounded text-[var(--bds-gray-t2)] hover:bg-[var(--bds-trans-hover)] ${
+                chartType === 'TradingView' ? 'bg-[var(--bds-gray-bg-active)]' : 'bg-[var(--bds-gray-bg-float)]'
+              }`}
+              onClick={() => setChartType('TradingView')}
+            >
               TradingView
             </button>
-            <button className="h-6 px-2 text-[var(--bds-font-size-12)] bg-[var(--bds-gray-bg-float)] rounded text-[var(--bds-gray-t2)] hover:bg-[var(--bds-trans-hover)]">
+            <button 
+              className={`h-6 px-2 text-[var(--bds-font-size-12)] rounded text-[var(--bds-gray-t2)] hover:bg-[var(--bds-trans-hover)] ${
+                chartType === 'Depth' ? 'bg-[var(--bds-gray-bg-active)]' : 'bg-[var(--bds-gray-bg-float)]'
+              }`}
+              onClick={() => setChartType('Depth')}
+            >
               Depth
             </button>
           </div>
@@ -197,7 +216,11 @@ export default function PriceChart() {
           </button>
         </div>
       </div>
-      <div ref={chartContainerRef} className="w-full h-full" />
+      {chartType === 'Depth' ? (
+        <DepthChart />
+      ) : (
+        <div ref={chartContainerRef} className="w-full h-full" />
+      )}
     </div>
   );
 } 
