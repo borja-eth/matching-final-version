@@ -10,6 +10,7 @@
 // | Routes         | Handler functions for API endpoints                        |
 // | States         | Shared application state                                   |
 // | DTOs           | Data transfer objects for API requests/responses           |
+// | Client         | HTTP client for interacting with the API                   |
 //
 //--------------------------------------------------------------------------------------------------
 // STRUCTS
@@ -19,11 +20,13 @@
 // | AppState       | Shared application state                         | new               |
 // | Api            | Main API structure                               | serve             |
 // | Error          | API error types                                  | from              |
+// | ApiClient      | HTTP client for API interaction                  | new, place_order  |
 //--------------------------------------------------------------------------------------------------
 
 mod routes;
 mod dto;
 mod error;
+mod client;
 
 use std::sync::Arc;
 use std::net::SocketAddr;
@@ -37,28 +40,47 @@ use tokio::sync::RwLock;
 use tokio::net::TcpListener;
 use uuid::Uuid;
 use tower_http::cors::CorsLayer;
+use std::collections::HashMap;
 
 use crate::matching_engine::MatchingEngine;
-use crate::events::EventBus;
+use crate::events::{EventBus, EventDispatcher, EventHandler, MatchingEngineEvent, EventResult};
+use crate::types::Trade;
 
 pub use error::{ApiError, ApiResult};
 pub use dto::*;
+pub use client::ApiClient;
 
-/// Shared application state accessible by all handlers
+/// Shared application state
+#[derive(Clone)]
 pub struct AppState {
-    /// Map of instrument ID to matching engine instance
-    pub engines: Arc<RwLock<std::collections::HashMap<Uuid, Arc<RwLock<MatchingEngine>>>>>,
-    /// Shared event bus
+    /// Map of instrument ID to matching engine
+    pub engines: Arc<RwLock<HashMap<Uuid, Arc<RwLock<MatchingEngine>>>>>,
+    
+    /// Event bus for system-wide events
     pub event_bus: Arc<EventBus>,
+    
+    /// Trade history by instrument
+    pub trades: Arc<RwLock<HashMap<Uuid, Vec<Trade>>>>,
 }
 
 impl AppState {
-    /// Creates a new application state
+    /// Creates a new application state with the given event bus
     pub fn new(event_bus: EventBus) -> Self {
-        Self {
-            engines: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            event_bus: Arc::new(event_bus),
-        }
+        let state = Self {
+            engines: Arc::new(RwLock::new(HashMap::new())),
+            event_bus: Arc::new(event_bus.clone()),
+            trades: Arc::new(RwLock::new(HashMap::new())),
+        };
+        
+        // Register as event handler
+        let event_dispatcher = EventDispatcher::new(event_bus);
+        let state_clone = Arc::new(state.clone());
+        tokio::spawn(async move {
+            let _ = event_dispatcher.register_handler(state_clone).await;
+            let _ = event_dispatcher.start().await;
+        });
+        
+        state
     }
     
     /// Adds a new instrument and creates a matching engine for it
@@ -75,6 +97,49 @@ impl AppState {
     pub async fn get_engine(&self, instrument_id: &Uuid) -> Option<Arc<RwLock<MatchingEngine>>> {
         let engines = self.engines.read().await;
         engines.get(instrument_id).cloned()
+    }
+
+    /// Get recent trades for an instrument
+    pub async fn get_recent_trades(&self, instrument_id: &Uuid, limit: usize) -> Vec<Trade> {
+        let trades = self.trades.read().await;
+        if let Some(instrument_trades) = trades.get(instrument_id) {
+            // Return up to limit trades, sorted by newest first
+            let mut result = instrument_trades.clone();
+            result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            if result.len() > limit {
+                result.truncate(limit);
+            }
+            return result;
+        }
+        Vec::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl EventHandler for AppState {
+    fn event_types(&self) -> Vec<&'static str> {
+        vec!["TradeExecuted"]
+    }
+    
+    async fn handle_event(&self, event: MatchingEngineEvent) -> EventResult<()> {
+        match event {
+            MatchingEngineEvent::TradeExecuted { trade, .. } => {
+                // Store the trade by instrument
+                let mut trades = self.trades.write().await;
+                let instrument_trades = trades
+                    .entry(trade.instrument_id)
+                    .or_insert_with(Vec::new);
+                instrument_trades.push(trade.clone());
+                
+                // Keep the last 1000 trades per instrument
+                if instrument_trades.len() > 1000 {
+                    instrument_trades.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                    instrument_trades.truncate(1000);
+                }
+            },
+            _ => {}
+        }
+        Ok(())
     }
 }
 

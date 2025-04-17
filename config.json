@@ -1,0 +1,16 @@
+{
+  "instrument_id": "0d157685-c753-402b-91f6-1d8d4da741c0",
+  "account_id": "8fcac94b-f9d4-4872-b24a-5bc6c6791f8f",
+  "base_price": "100.0",
+  "base_spread_pct": "0.1",
+  "min_order_size": "0.01",
+  "max_order_size": "1.0",
+  "max_active_orders": 100,
+  "price_levels": 5,
+  "refresh_interval_ms": 1000,
+  "inventory_skew_factor": "0.2",
+  "capital": "100000",
+  "max_imbalance_pct": "5",
+  "min_profit_pct": "0.05",
+  "volatility_factor": "1.0"
+}

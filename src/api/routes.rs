@@ -173,19 +173,24 @@ pub async fn get_trades(
     Query(params): Query<HashMap<String, String>>,
 ) -> ApiResult<Response> {
     // Get limit from query params (default 20)
-    let _limit = params.get("limit")
+    let limit = params.get("limit")
         .and_then(|limit_str| limit_str.parse::<usize>().ok())
         .unwrap_or(20);
     
-    // Get the matching engine for the instrument
-    let _engine_lock = state.get_engine(&instrument_id).await
-        .ok_or_else(|| ApiError::NotFound(format!("Instrument {} not found", instrument_id)))?;
+    // Verify the instrument exists
+    if state.get_engine(&instrument_id).await.is_none() {
+        return Err(ApiError::NotFound(format!("Instrument {} not found", instrument_id)));
+    }
     
-    // This functionality would need to be added to the engine
-    // For demonstration, we'll return an empty trades list
-    let trades = Vec::<TradeResponse>::new();
+    // Get trades directly from the AppState
+    let trades = state.get_recent_trades(&instrument_id, limit).await;
     
-    Ok((StatusCode::OK, Json(trades)).into_response())
+    // Convert to trade responses
+    let trade_responses: Vec<TradeResponse> = trades.into_iter()
+        .map(TradeResponse::from)
+        .collect();
+    
+    Ok((StatusCode::OK, Json(trade_responses)).into_response())
 }
 
 /// Create a new trading instrument
