@@ -161,6 +161,7 @@ impl MarketMakerConfig {
 }
 
 /// Tracks market state and statistics
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct MarketState {
     /// Current mid price
@@ -188,6 +189,7 @@ struct MarketState {
     last_update: Instant,
 }
 
+#[allow(dead_code)]
 impl MarketState {
     /// Creates a new market state
     fn new(initial_price: Decimal, initial_spread: Decimal) -> Self {
@@ -274,7 +276,7 @@ impl MarketState {
     }
 }
 
-/// Main neutral market maker implementation
+#[allow(dead_code)]
 pub struct NeutralMarketMaker {
     /// Configuration
     config: MarketMakerConfig,
@@ -1051,6 +1053,7 @@ impl MarketMakingStrategy {
     }
 }
 
+#[allow(dead_code)]
 /// Inventory manager for tracking positions and calculating inventory-based adjustments
 #[derive(Debug, Clone)]
 pub struct InventoryManager {
@@ -1302,12 +1305,13 @@ impl OrderBook {
         
         for order in orders {
             if let Some(price) = order.limit_price {
+                let decimal_price = Decimal::from(price);
                 match order.side {
                     Side::Bid => {
-                        self.bids.insert(price, order.remaining_base);
+                        self.bids.insert(decimal_price, Decimal::from(order.remaining_base));
                     },
                     Side::Ask => {
-                        self.asks.insert(price, order.remaining_base);
+                        self.asks.insert(decimal_price, Decimal::from(order.remaining_base));
                     }
                 }
             }

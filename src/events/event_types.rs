@@ -49,7 +49,7 @@ pub enum MatchingEngineEvent {
         /// The order that was matched
         order: Order,
         /// Amount of the order that was matched
-        matched_quantity: rust_decimal::Decimal,
+        matched_quantity: u64,
         /// Timestamp when the event occurred
         timestamp: chrono::DateTime<Utc>,
     },

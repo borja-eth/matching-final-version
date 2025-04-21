@@ -20,7 +20,6 @@ use tokio::signal;
 use tracing::{info, Level};
 use uuid::Uuid;
 use std::path::PathBuf;
-use rust_decimal::prelude::FromPrimitive;
 use async_trait::async_trait;
 
 use ultimate_matching::{
@@ -124,11 +123,12 @@ struct Opt {
 
 /// Helper function to create a test order
 fn create_test_order(side: Side, price: f64, quantity: f64, instrument_id: Uuid) -> Order {
-    use rust_decimal::Decimal;
     use chrono::Utc;
 
-    let price_dec = Decimal::from_f64(price).unwrap();
-    let quantity_dec = Decimal::from_f64(quantity).unwrap();
+    // Convert to integer values with 6 decimal places of precision
+    let price_i64 = (price * 1_000_000.0) as i64;
+    let quantity_u64 = (quantity * 1_000_000.0) as u64;
+    let quote_amount = ((price * quantity) * 1_000_000.0) as u64;
     
     let now = Utc::now();
     
@@ -139,20 +139,21 @@ fn create_test_order(side: Side, price: f64, quantity: f64, instrument_id: Uuid)
         order_type: OrderType::Limit,
         instrument_id,
         side,
-        limit_price: Some(price_dec),
+        limit_price: Some(price_i64),
         trigger_price: None,
-        base_amount: quantity_dec,
-        remaining_base: quantity_dec,
-        filled_quote: Decimal::ZERO,
-        filled_base: Decimal::ZERO,
-        remaining_quote: price_dec * quantity_dec,
+        base_amount: quantity_u64,
+        remaining_base: quantity_u64,
+        filled_quote: 0,
+        filled_base: 0,
+        remaining_quote: quote_amount,
         expiration_date: now + chrono::Duration::days(365),
-        status: OrderStatus::New,
+        status: OrderStatus::Submitted,
         created_at: now,
         updated_at: now,
         trigger_by: None,
         created_from: ultimate_matching::types::CreatedFrom::Api,
         sequence_id: 1,
+        time_in_force: TimeInForce::GTC,
     }
 }
 

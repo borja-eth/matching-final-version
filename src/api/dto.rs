@@ -54,20 +54,21 @@ impl CreateOrderRequest {
             order_type: self.order_type,
             instrument_id: self.instrument_id,
             side: self.side,
-            limit_price: self.limit_price,
-            trigger_price: self.trigger_price,
-            base_amount: self.base_amount,
-            remaining_base: self.base_amount,
-            filled_base: Decimal::ZERO,
-            remaining_quote: self.limit_price.unwrap_or(Decimal::ZERO) * self.base_amount,
-            filled_quote: Decimal::ZERO,
+            limit_price: self.limit_price.map(|p| ((p * Decimal::from(100000)).round().to_string().parse::<i64>().unwrap_or(0))),
+            trigger_price: self.trigger_price.map(|p| ((p * Decimal::from(100000)).round().to_string().parse::<i64>().unwrap_or(0))),
+            base_amount: (self.base_amount * Decimal::from(100000)).round().to_string().parse::<u64>().unwrap_or(0),
+            remaining_base: (self.base_amount * Decimal::from(100000)).round().to_string().parse::<u64>().unwrap_or(0),
+            filled_base: 0,
+            remaining_quote: self.limit_price.map_or(0, |p| ((p * self.base_amount * Decimal::from(100000)).round().to_string().parse::<u64>().unwrap_or(0))),
+            filled_quote: 0,
             expiration_date: now + chrono::Duration::days(7), // Default 7-day expiration
-            status: OrderStatus::New,
+            status: OrderStatus::Submitted,
             created_at: now,
             updated_at: now,
             trigger_by: None,
             created_from: crate::types::CreatedFrom::Api,
             sequence_id: 0, // Will be set by the engine
+            time_in_force: self.time_in_force,
         }
     }
 }
@@ -116,12 +117,12 @@ impl From<Order> for OrderResponse {
             order_type: order.order_type,
             instrument_id: order.instrument_id,
             side: order.side,
-            limit_price: order.limit_price,
-            trigger_price: order.trigger_price,
-            base_amount: order.base_amount,
-            remaining_base: order.remaining_base,
-            filled_base: order.filled_base,
-            filled_quote: order.filled_quote,
+            limit_price: order.limit_price.map(|p| Decimal::from(p) / Decimal::from(100000)),
+            trigger_price: order.trigger_price.map(|p| Decimal::from(p) / Decimal::from(100000)),
+            base_amount: Decimal::from(order.base_amount) / Decimal::from(100000),
+            remaining_base: Decimal::from(order.remaining_base) / Decimal::from(100000),
+            filled_base: Decimal::from(order.filled_base) / Decimal::from(100000),
+            filled_quote: Decimal::from(order.filled_quote) / Decimal::from(100000),
             status: order.status,
             created_at: order.created_at,
             updated_at: order.updated_at,
@@ -143,8 +144,8 @@ pub struct PriceLevelResponse {
 impl From<PriceLevel> for PriceLevelResponse {
     fn from(level: PriceLevel) -> Self {
         Self {
-            price: level.price,
-            volume: level.volume,
+            price: Decimal::from(level.price) / Decimal::from(100000),
+            volume: Decimal::from(level.volume) / Decimal::from(100000),
             order_count: level.order_count,
         }
     }
@@ -202,9 +203,9 @@ impl From<Trade> for TradeResponse {
             instrument_id: trade.instrument_id,
             maker_order_id: trade.maker_order_id,
             taker_order_id: trade.taker_order_id,
-            base_amount: trade.base_amount,
-            quote_amount: trade.quote_amount,
-            price: trade.price,
+            base_amount: Decimal::from(trade.base_amount) / Decimal::from(100000),
+            quote_amount: Decimal::from(trade.quote_amount) / Decimal::from(100000),
+            price: Decimal::from(trade.price) / Decimal::from(100000),
             created_at: trade.created_at,
         }
     }

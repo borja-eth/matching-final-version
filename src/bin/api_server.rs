@@ -164,7 +164,10 @@ impl EventHandler for MarketDisplayHandler {
                 let mut quotes = self.quotes.write().await;
                 quotes.insert(
                     depth.instrument_id,
-                    (depth.best_bid(), depth.best_ask())
+                    (
+                        depth.best_bid().map(|p| rust_decimal::Decimal::from(p) / rust_decimal::Decimal::from(100_000)),
+                        depth.best_ask().map(|p| rust_decimal::Decimal::from(p) / rust_decimal::Decimal::from(100_000))
+                    )
                 );
             },
             MatchingEngineEvent::OrderCancelled { order, .. } => {

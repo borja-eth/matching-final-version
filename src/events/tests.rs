@@ -1,6 +1,6 @@
 #[cfg(test)]
 pub mod tests {
-    use crate::types::{Order, Trade, OrderType, OrderStatus, CreatedFrom, Side};
+    use crate::types::{Order, Trade, OrderType, OrderStatus, CreatedFrom, Side, TimeInForce};
     use crate::events::{
         EventBus, 
         MatchingEngineEvent, 
@@ -11,7 +11,6 @@ pub mod tests {
         EventError,
         EventResult
     };
-    use rust_decimal_macros::dec;
     use chrono::Utc;
     use uuid::Uuid;
     use std::sync::Arc;
@@ -29,20 +28,21 @@ pub mod tests {
             order_type: OrderType::Limit,
             instrument_id: Uuid::new_v4(),
             side: Side::Bid,
-            limit_price: Some(dec!(100.0)),
+            limit_price: Some(100_000),  // 100.0 scaled by 100000
             trigger_price: None,
-            base_amount: dec!(1.0),
-            remaining_base: dec!(1.0),
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
-            remaining_quote: dec!(100.0),
+            base_amount: 100_000,        // 1.0 scaled by 100000
+            remaining_base: 100_000,     // 1.0 scaled by 100000
+            filled_quote: 0,
+            filled_base: 0,
+            remaining_quote: 10_000_000, // 100.0 scaled by 100000
             expiration_date: now + chrono::Duration::days(365),
-            status: OrderStatus::New,
+            status: OrderStatus::Submitted,
             created_at: now,
             updated_at: now,
             trigger_by: None,
             created_from: CreatedFrom::Api,
             sequence_id: 1,
+            time_in_force: TimeInForce::GTC,
         }
     }
     
@@ -53,9 +53,9 @@ pub mod tests {
             instrument_id: Uuid::new_v4(),
             maker_order_id: Uuid::new_v4(),
             taker_order_id: Uuid::new_v4(),
-            base_amount: dec!(1.0),
-            quote_amount: dec!(100.0),
-            price: dec!(100.0),
+            base_amount: 100_000,        // 1.0 scaled by 100000
+            quote_amount: 10_000_000,    // 100.0 scaled by 100000
+            price: 100_000,              // 100.0 scaled by 100000
             created_at: Utc::now(),
         }
     }

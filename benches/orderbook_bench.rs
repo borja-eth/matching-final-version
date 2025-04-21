@@ -16,20 +16,21 @@ fn create_test_order(side: Side, price: Decimal, quantity: Decimal, instrument_i
         order_type: OrderType::Limit,
         instrument_id,
         side,
-        limit_price: Some(price),
+        limit_price: Some(price.round_dp(0).try_into().unwrap()),
         trigger_price: None,
-        base_amount: quantity,
-        remaining_base: quantity,
-        filled_quote: dec!(0.0),
-        filled_base: dec!(0.0),
-        remaining_quote: price * quantity,
+        base_amount: quantity.round_dp(0).try_into().unwrap(),
+        remaining_base: quantity.round_dp(0).try_into().unwrap(),
+        filled_quote: 0,
+        filled_base: 0,
+        remaining_quote: (price * quantity).round_dp(0).try_into().unwrap(),
         expiration_date: now + chrono::Duration::days(365),
-        status: OrderStatus::New,
+        status: OrderStatus::Submitted,
         created_at: now,
         updated_at: now,
         trigger_by: None,
         created_from: CreatedFrom::Api,
         sequence_id: 1,
+        time_in_force: TimeInForce::GTC,
     }
 }
 
@@ -43,7 +44,7 @@ fn orderbook_benchmark(c: &mut Criterion) {
         let order = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
         
         b.iter(|| {
-            book.add_order(black_box(order.clone()));
+            let _ = book.add_order(black_box(order.clone()));
         });
     });
     
@@ -52,16 +53,16 @@ fn orderbook_benchmark(c: &mut Criterion) {
         let instrument_id = Uuid::new_v4();
         let mut book = OrderBook::new(instrument_id);
         let order = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
-        book.add_order(order.clone());
+        let _ = book.add_order(order.clone());
         
         // Extract limit price once outside the benchmark loop
-        let limit_price = match order.limit_price {
+        let _limit_price = match order.limit_price {
             Some(price) => price,
             None => panic!("Test order must have a limit price"),
         };
         
         b.iter(|| {
-            book.remove_order(black_box(order.id), black_box(order.side), black_box(limit_price));
+            let _ = book.remove_order(black_box(order.id));
         });
     });
     
@@ -75,13 +76,13 @@ fn orderbook_benchmark(c: &mut Criterion) {
             let buy_price = Decimal::from(100 - i);
             let sell_price = Decimal::from(100 + i);
             
-            book.add_order(create_test_order(
+            let _ = book.add_order(create_test_order(
                 Side::Bid,
                 buy_price,
                 dec!(1.0),
                 instrument_id
             ));
-            book.add_order(create_test_order(
+            let _ = book.add_order(create_test_order(
                 Side::Ask,
                 sell_price,
                 dec!(1.0),
@@ -105,13 +106,13 @@ fn orderbook_benchmark(c: &mut Criterion) {
             let buy_price = Decimal::from(100 - i);
             let sell_price = Decimal::from(100 + i);
             
-            book.add_order(create_test_order(
+            let _ = book.add_order(create_test_order(
                 Side::Bid,
                 buy_price,
                 dec!(1.0),
                 instrument_id
             ));
-            book.add_order(create_test_order(
+            let _ = book.add_order(create_test_order(
                 Side::Ask,
                 sell_price,
                 dec!(1.0),

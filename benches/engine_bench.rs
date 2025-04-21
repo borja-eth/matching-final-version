@@ -18,6 +18,10 @@ fn create_test_order(
     instrument_id: Uuid,
 ) -> Order {
     let now = Utc::now();
+    let price_i64 = (price * Decimal::from(100_000)).round().to_string().parse::<i64>().unwrap_or(0);
+    let quantity_u64 = (quantity * Decimal::from(100_000)).round().to_string().parse::<u64>().unwrap_or(0);
+    let quote_amount = ((price * quantity) * Decimal::from(100_000)).round().to_string().parse::<u64>().unwrap_or(0);
+
     Order {
         id: Uuid::new_v4(),
         ext_id: Some("test-order".to_string()),
@@ -25,20 +29,21 @@ fn create_test_order(
         order_type,
         instrument_id,
         side,
-        limit_price: Some(price),
+        limit_price: Some(price_i64),
         trigger_price: None,
-        base_amount: quantity,
-        remaining_base: quantity,
-        filled_base: dec!(0),
-        filled_quote: dec!(0),
-        remaining_quote: price * quantity,
+        base_amount: quantity_u64,
+        remaining_base: quantity_u64,
+        filled_base: 0,
+        filled_quote: 0,
+        remaining_quote: quote_amount,
         expiration_date: now + chrono::Duration::days(1),
-        status: OrderStatus::New,
+        status: OrderStatus::Submitted,
         created_at: now,
         updated_at: now,
         trigger_by: None,
         created_from: CreatedFrom::Api,
         sequence_id: 0,
+        time_in_force: tif,
     }
 }
 

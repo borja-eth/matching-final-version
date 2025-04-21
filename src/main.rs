@@ -2,10 +2,7 @@ mod types;
 
 use std::sync::Arc;
 use chrono::Utc;
-use rust_decimal_macros::dec;
 use uuid::Uuid;
-use rust_decimal::Decimal;
-use num_traits::FromPrimitive;
 use tracing_subscriber;
 
 use ultimate_matching::{
@@ -58,9 +55,10 @@ impl EventHandler for ConsoleEventHandler {
 fn create_test_order(side: Side, price: f64, qty: f64, instrument_id: Uuid) -> Order {
     let now = Utc::now();
     
-    // Convert f64 to Decimal correctly using FromPrimitive
-    let price_dec = Decimal::from_f64(price).unwrap_or_else(|| dec!(0));
-    let qty_dec = Decimal::from_f64(qty).unwrap_or_else(|| dec!(0));
+    // Convert to integer values with 6 decimal places of precision
+    let price_i64 = (price * 1_000_000.0) as i64;
+    let qty_u64 = (qty * 1_000_000.0) as u64;
+    let quote_amount = ((price * qty) * 1_000_000.0) as u64;
     
     Order {
         id: Uuid::new_v4(),
@@ -69,20 +67,21 @@ fn create_test_order(side: Side, price: f64, qty: f64, instrument_id: Uuid) -> O
         order_type: OrderType::Limit,
         instrument_id,
         side,
-        limit_price: Some(price_dec),
+        limit_price: Some(price_i64),
         trigger_price: None,
-        base_amount: qty_dec,
-        remaining_base: qty_dec,
-        filled_quote: dec!(0),
-        filled_base: dec!(0),
-        remaining_quote: price_dec * qty_dec,
+        base_amount: qty_u64,
+        remaining_base: qty_u64,
+        filled_quote: 0,
+        filled_base: 0,
+        remaining_quote: quote_amount,
         expiration_date: now + chrono::Duration::days(7),
-        status: OrderStatus::New,
+        status: OrderStatus::Submitted,
         created_at: now,
         updated_at: now,
         trigger_by: None,
         created_from: ultimate_matching::types::CreatedFrom::Api,
         sequence_id: 0,
+        time_in_force: TimeInForce::GTC,
     }
 }
 

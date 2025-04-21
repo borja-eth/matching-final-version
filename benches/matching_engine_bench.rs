@@ -14,9 +14,11 @@ fn create_test_order(
     instrument_id: Uuid,
 ) -> Order {
     let now = Utc::now();
+    let price_i64 = price.map(|p| (p * rust_decimal::Decimal::from(100_000)).round().to_string().parse::<i64>().unwrap_or(0));
+    let quantity_u64 = (quantity * rust_decimal::Decimal::from(100_000)).round().to_string().parse::<u64>().unwrap_or(0);
     let remaining_quote = match price {
-        Some(p) => p * quantity,
-        None => dec!(0),
+        Some(p) => ((p * quantity) * rust_decimal::Decimal::from(100_000)).round().to_string().parse::<u64>().unwrap_or(0),
+        None => 0,
     };
 
     Order {
@@ -26,20 +28,21 @@ fn create_test_order(
         order_type,
         instrument_id,
         side,
-        limit_price: price,
+        limit_price: price_i64,
         trigger_price: None,
-        base_amount: quantity,
-        remaining_base: quantity,
-        filled_quote: dec!(0.0),
-        filled_base: dec!(0.0),
+        base_amount: quantity_u64,
+        remaining_base: quantity_u64,
+        filled_quote: 0,
+        filled_base: 0,
         remaining_quote,
         expiration_date: now + chrono::Duration::days(365),
-        status: OrderStatus::New,
+        status: OrderStatus::Submitted,
         created_at: now,
         updated_at: now,
         trigger_by: None,
         created_from: CreatedFrom::Api,
         sequence_id: 0,
+        time_in_force: TimeInForce::GTC,
     }
 }
 
@@ -243,7 +246,7 @@ fn bench_ioc_orders(c: &mut Criterion) {
 }
 
 fn bench_market_orders(c: &mut Criterion) {
-    let (mut engine, instrument_id) = setup_engine();
+    let (_engine, _instrument_id) = setup_engine();
     let mut group = c.benchmark_group("market_orders");
 
     group.bench_function("market_order_processing", |b| {

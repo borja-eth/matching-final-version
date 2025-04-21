@@ -35,7 +35,6 @@
 
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::sync::Arc;
-use rust_decimal::Decimal;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
@@ -44,18 +43,18 @@ use crate::types::{Order, Side};
 
 /// Newtype wrapper for price to provide type safety and semantic meaning
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Price(Decimal);
+pub struct Price(i64);
 
 impl Price {
-    /// Creates a new Price from a Decimal
+    /// Creates a new Price from an i64
     #[inline]
-    pub fn new(price: Decimal) -> Self {
+    pub fn new(price: i64) -> Self {
         Self(price)
     }
 
-    /// Gets the inner Decimal value
+    /// Gets the inner i64 value
     #[inline]
-    pub fn inner(&self) -> Decimal {
+    pub fn inner(&self) -> i64 {
         self.0
     }
 }
@@ -64,9 +63,9 @@ impl Price {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PriceLevel {
     /// The price for this level
-    pub price: Decimal,
+    pub price: i64,
     /// Total volume at this price level
-    pub volume: Decimal,
+    pub volume: u64,
     /// Number of orders at this price level
     pub order_count: u32,
 }
@@ -74,7 +73,7 @@ pub struct PriceLevel {
 impl PriceLevel {
     /// Creates a new price level
     #[inline]
-    pub fn new(price: Decimal, volume: Decimal, order_count: u32) -> Self {
+    pub fn new(price: i64, volume: u64, order_count: u32) -> Self {
         Self {
             price,
             volume,
@@ -120,19 +119,19 @@ impl DepthSnapshot {
 
     /// Returns the best bid price if available
     #[inline]
-    pub fn best_bid(&self) -> Option<Decimal> {
+    pub fn best_bid(&self) -> Option<i64> {
         self.bids.first().map(|level| level.price)
     }
 
     /// Returns the best ask price if available
     #[inline]
-    pub fn best_ask(&self) -> Option<Decimal> {
+    pub fn best_ask(&self) -> Option<i64> {
         self.asks.first().map(|level| level.price)
     }
 
     /// Returns the current spread (best ask - best bid)
     #[inline]
-    pub fn spread(&self) -> Option<Decimal> {
+    pub fn spread(&self) -> Option<i64> {
         match (self.best_ask(), self.best_bid()) {
             (Some(ask), Some(bid)) => Some(ask - bid),
             _ => None,
@@ -217,7 +216,7 @@ impl DepthTracker {
                 level.order_count = level.order_count.saturating_sub(1);
                 
                 // If no orders left at this level, remove it
-                if level.order_count == 0 || level.volume.is_zero() {
+                if level.order_count == 0 || level.volume == 0 {
                     entry.remove();
                 }
             }
@@ -226,7 +225,7 @@ impl DepthTracker {
 
     /// Updates depth when an order is matched (partial or full fill)
     #[inline]
-    pub fn update_order_matched(&mut self, order: &Order, matched_quantity: Decimal) {
+    pub fn update_order_matched(&mut self, order: &Order, matched_quantity: u64) {
         if let Some(price) = order.limit_price {
             let price_key = Price::new(price);
             let price_levels = match order.side {
@@ -237,14 +236,14 @@ impl DepthTracker {
             // Find the price level and update it
             if let Some(level) = price_levels.get_mut(&price_key) {
                 // Subtract matched quantity
-                level.volume -= matched_quantity;
+                level.volume = level.volume.saturating_sub(matched_quantity);
                 
                 // If fully filled, decrement order count
-                if order.remaining_base.is_zero() {
+                if order.remaining_base == 0 {
                     level.order_count = level.order_count.saturating_sub(1);
                     
                     // If no orders left at this level, remove it
-                    if level.order_count == 0 || level.volume.is_zero() {
+                    if level.order_count == 0 || level.volume == 0 {
                         price_levels.remove(&price_key);
                     }
                 }
@@ -343,13 +342,13 @@ impl DepthTracker {
 
     /// Returns the total volume across all bid levels
     #[inline]
-    pub fn total_bid_volume(&self) -> Decimal {
+    pub fn total_bid_volume(&self) -> u64 {
         self.bids.values().map(|level| level.volume).sum()
     }
 
     /// Returns the total volume across all ask levels
     #[inline]
-    pub fn total_ask_volume(&self) -> Decimal {
+    pub fn total_ask_volume(&self) -> u64 {
         self.asks.values().map(|level| level.volume).sum()
     }
 }
@@ -376,7 +375,7 @@ impl SharedDepthTracker {
     }
 
     /// Updates depth when an order is matched (acquires write lock)
-    pub fn update_order_matched(&self, order: &Order, matched_quantity: Decimal) {
+    pub fn update_order_matched(&self, order: &Order, matched_quantity: u64) {
         let mut tracker = self.0.write();
         tracker.update_order_matched(order, matched_quantity);
     }
@@ -402,14 +401,13 @@ impl SharedDepthTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal_macros::dec;
-    use crate::types::{OrderType, OrderStatus, CreatedFrom};
+    use crate::types::{OrderType, OrderStatus, CreatedFrom, TimeInForce};
     
     // Helper to create test orders
     fn create_test_order(
         side: Side, 
-        price: Decimal, 
-        quantity: Decimal,
+        price: i64, 
+        quantity: u64,
         instrument_id: Uuid
     ) -> Order {
         let now = Utc::now();
@@ -424,16 +422,17 @@ mod tests {
             trigger_price: None,
             base_amount: quantity,
             remaining_base: quantity,
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
-            remaining_quote: price * quantity,
+            filled_quote: 0,
+            filled_base: 0,
+            remaining_quote: (price as u64) * quantity,
             expiration_date: now + chrono::Duration::days(365),
-            status: OrderStatus::New,
+            status: OrderStatus::Submitted,
             created_at: now,
             updated_at: now,
             trigger_by: None,
             created_from: CreatedFrom::Api,
             sequence_id: 1,
+            time_in_force: TimeInForce::GTC,
         }
     }
     
@@ -461,32 +460,32 @@ mod tests {
         let mut tracker = DepthTracker::new(instrument_id);
         
         // Add bid order
-        let bid_order = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
+        let bid_order = create_test_order(Side::Bid, 100_000, 100_000, instrument_id);
         tracker.update_order_added(&bid_order);
         
         // Verify bid side
         assert_eq!(tracker.bid_level_count(), 1);
-        assert_eq!(tracker.best_bid().unwrap().price, dec!(100.0));
-        assert_eq!(tracker.best_bid().unwrap().volume, dec!(1.0));
+        assert_eq!(tracker.best_bid().unwrap().price, 100_000);
+        assert_eq!(tracker.best_bid().unwrap().volume, 100_000);
         assert_eq!(tracker.best_bid().unwrap().order_count, 1);
         
         // Add ask order
-        let ask_order = create_test_order(Side::Ask, dec!(101.0), dec!(2.0), instrument_id);
+        let ask_order = create_test_order(Side::Ask, 101_000, 200_000, instrument_id);
         tracker.update_order_added(&ask_order);
         
         // Verify ask side
         assert_eq!(tracker.ask_level_count(), 1);
-        assert_eq!(tracker.best_ask().unwrap().price, dec!(101.0));
-        assert_eq!(tracker.best_ask().unwrap().volume, dec!(2.0));
+        assert_eq!(tracker.best_ask().unwrap().price, 101_000);
+        assert_eq!(tracker.best_ask().unwrap().volume, 200_000);
         assert_eq!(tracker.best_ask().unwrap().order_count, 1);
         
         // Get snapshot
         let snapshot = tracker.get_snapshot(10);
         assert_eq!(snapshot.bids.len(), 1);
         assert_eq!(snapshot.asks.len(), 1);
-        assert_eq!(snapshot.best_bid(), Some(dec!(100.0)));
-        assert_eq!(snapshot.best_ask(), Some(dec!(101.0)));
-        assert_eq!(snapshot.spread(), Some(dec!(1.0)));
+        assert_eq!(snapshot.best_bid(), Some(100_000));
+        assert_eq!(snapshot.best_ask(), Some(101_000));
+        assert_eq!(snapshot.spread(), Some(1_000));
     }
     
     #[test]
@@ -495,15 +494,15 @@ mod tests {
         let mut tracker = DepthTracker::new(instrument_id);
         
         // Add multiple bid orders at same price
-        let bid_order1 = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
-        let bid_order2 = create_test_order(Side::Bid, dec!(100.0), dec!(2.0), instrument_id);
+        let bid_order1 = create_test_order(Side::Bid, 100_000, 100_000, instrument_id);
+        let bid_order2 = create_test_order(Side::Bid, 100_000, 200_000, instrument_id);
         
         tracker.update_order_added(&bid_order1);
         tracker.update_order_added(&bid_order2);
         
         // Verify aggregated level
         assert_eq!(tracker.bid_level_count(), 1);
-        assert_eq!(tracker.best_bid().unwrap().volume, dec!(3.0));
+        assert_eq!(tracker.best_bid().unwrap().volume, 300_000);
         assert_eq!(tracker.best_bid().unwrap().order_count, 2);
     }
     
@@ -514,9 +513,9 @@ mod tests {
         
         // Add bids at different prices
         let bid_orders = [
-            create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id),
-            create_test_order(Side::Bid, dec!(99.0), dec!(2.0), instrument_id),
-            create_test_order(Side::Bid, dec!(101.0), dec!(0.5), instrument_id),
+            create_test_order(Side::Bid, 100_000, 100_000, instrument_id),
+            create_test_order(Side::Bid, 99_000, 200_000, instrument_id),
+            create_test_order(Side::Bid, 101_000, 50_000, instrument_id),
         ];
         
         for order in &bid_orders {
@@ -525,14 +524,14 @@ mod tests {
         
         // Verify multiple levels
         assert_eq!(tracker.bid_level_count(), 3);
-        assert_eq!(tracker.best_bid().unwrap().price, dec!(101.0));
+        assert_eq!(tracker.best_bid().unwrap().price, 101_000);
         
         // Get snapshot and verify ordering (descending for bids)
         let snapshot = tracker.get_snapshot(10);
         assert_eq!(snapshot.bids.len(), 3);
-        assert_eq!(snapshot.bids[0].price, dec!(101.0));
-        assert_eq!(snapshot.bids[1].price, dec!(100.0));
-        assert_eq!(snapshot.bids[2].price, dec!(99.0));
+        assert_eq!(snapshot.bids[0].price, 101_000);
+        assert_eq!(snapshot.bids[1].price, 100_000);
+        assert_eq!(snapshot.bids[2].price, 99_000);
     }
     
     #[test]
@@ -541,7 +540,7 @@ mod tests {
         let mut tracker = DepthTracker::new(instrument_id);
         
         // Add bid order
-        let bid_order = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
+        let bid_order = create_test_order(Side::Bid, 100_000, 100_000, instrument_id);
         tracker.update_order_added(&bid_order);
         
         // Remove it
@@ -558,17 +557,17 @@ mod tests {
         let mut tracker = DepthTracker::new(instrument_id);
         
         // Add bid order
-        let mut bid_order = create_test_order(Side::Bid, dec!(100.0), dec!(2.0), instrument_id);
+        let mut bid_order = create_test_order(Side::Bid, 100_000, 200_000, instrument_id);
         tracker.update_order_added(&bid_order);
         
         // Partially fill order
-        let filled_qty = dec!(0.5);
-        bid_order.remaining_base -= filled_qty;
+        let filled_qty = 50_000;
+        bid_order.remaining_base = bid_order.remaining_base.saturating_sub(filled_qty);
         
         tracker.update_order_matched(&bid_order, filled_qty);
         
         // Verify partial fill
-        assert_eq!(tracker.best_bid().unwrap().volume, dec!(1.5));
+        assert_eq!(tracker.best_bid().unwrap().volume, 150_000);
         assert_eq!(tracker.best_bid().unwrap().order_count, 1);
     }
     
@@ -578,12 +577,12 @@ mod tests {
         let mut tracker = DepthTracker::new(instrument_id);
         
         // Add bid order
-        let mut bid_order = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
+        let mut bid_order = create_test_order(Side::Bid, 100_000, 100_000, instrument_id);
         tracker.update_order_added(&bid_order);
         
         // Fully fill order
-        let filled_qty = dec!(1.0);
-        bid_order.remaining_base = dec!(0.0);
+        let filled_qty = 100_000;
+        bid_order.remaining_base = 0;
         
         tracker.update_order_matched(&bid_order, filled_qty);
         
@@ -599,8 +598,8 @@ mod tests {
         
         // Add multiple price levels
         for i in 1..=5 {
-            let price = Decimal::from(100 + i);
-            let order = create_test_order(Side::Ask, price, dec!(1.0), instrument_id);
+            let price = 100_000 + i * 1_000;
+            let order = create_test_order(Side::Ask, price, (100_000 + i * 1_000) as u64, instrument_id);
             tracker.update_order_added(&order);
         }
         
@@ -609,9 +608,9 @@ mod tests {
         
         // Verify only 3 levels are returned
         assert_eq!(snapshot.asks.len(), 3);
-        assert_eq!(snapshot.asks[0].price, dec!(101.0));
-        assert_eq!(snapshot.asks[1].price, dec!(102.0));
-        assert_eq!(snapshot.asks[2].price, dec!(103.0));
+        assert_eq!(snapshot.asks[0].price, 101_000);
+        assert_eq!(snapshot.asks[1].price, 102_000);
+        assert_eq!(snapshot.asks[2].price, 103_000);
     }
     
     #[test]
@@ -639,7 +638,7 @@ mod tests {
         let shared_tracker = SharedDepthTracker::new(instrument_id);
         
         // Add bid order
-        let bid_order = create_test_order(Side::Bid, dec!(100.0), dec!(1.0), instrument_id);
+        let bid_order = create_test_order(Side::Bid, 100_000, 100_000, instrument_id);
         shared_tracker.update_order_added(&bid_order);
         
         // Get snapshot
@@ -647,13 +646,13 @@ mod tests {
         
         // Verify order was added
         assert_eq!(snapshot.bids.len(), 1);
-        assert_eq!(snapshot.bids[0].price, dec!(100.0));
+        assert_eq!(snapshot.bids[0].price, 100_000);
         
         // Clone the tracker
         let tracker_clone = shared_tracker.clone();
         
         // Add through clone
-        let ask_order = create_test_order(Side::Ask, dec!(101.0), dec!(1.0), instrument_id);
+        let ask_order = create_test_order(Side::Ask, 101_000, 200_000, instrument_id);
         tracker_clone.update_order_added(&ask_order);
         
         // Get snapshot from original
@@ -661,6 +660,6 @@ mod tests {
         
         // Verify both trackers share the same state
         assert_eq!(updated_snapshot.asks.len(), 1);
-        assert_eq!(updated_snapshot.asks[0].price, dec!(101.0));
+        assert_eq!(updated_snapshot.asks[0].price, 101_000);
     }
 } 

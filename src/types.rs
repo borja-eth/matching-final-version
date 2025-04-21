@@ -24,7 +24,6 @@
 // | CreatedFrom   | Source of order creation.                 |
 //--------------------------------------------------------------------------------------------------
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
 use thiserror::Error; // Added early for consistency, though errors defined later
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
@@ -41,6 +40,7 @@ pub enum Side {
     Ask,
 }
 
+#[allow(dead_code)]
 impl Side {
     pub fn opposite(&self) -> Self {
         match self {
@@ -205,12 +205,12 @@ pub struct Trade {
     pub maker_order_id: Uuid,
     /// ID of the order that matched the resting order (taker).
     pub taker_order_id: Uuid,
-    /// Quantity traded in base units. Stored as Decimal.
-    pub base_amount: Decimal,
-    /// Quantity traded in quote units. Stored as Decimal. Calculated as base_amount * price.
-    pub quote_amount: Decimal, // Renamed from quoteAmountInNanoBTC for clarity w/ Decimal
-    /// Price at which the trade occurred. Stored as Decimal.
-    pub price: Decimal,
+    /// Quantity traded in base units. Stored as u64.
+    pub base_amount: u64,
+    /// Quantity traded in quote units. Stored as u64. Calculated as base_amount * price.
+    pub quote_amount: u64,
+    /// Price at which the trade occurred. Stored as i64.
+    pub price: i64,
     /// Timestamp when the trade occurred.
     pub created_at: DateTime<Utc>,
 }
@@ -277,7 +277,7 @@ pub enum TypeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal_macros::dec; // For easy Decimal literal creation
+ // For easy Decimal literal creation
 
     #[test]
     fn test_order_creation() {
@@ -319,13 +319,13 @@ mod tests {
             instrument_id: Uuid::new_v4(),
             maker_order_id: Uuid::new_v4(),
             taker_order_id: Uuid::new_v4(),
-            base_amount: dec!(0.5),
-            quote_amount: dec!(25000.25),
-            price: dec!(50000.50),
+            base_amount: 50000,        // 0.5 BTC
+            quote_amount: 2500000000,  // 50000 * 50000
+            price: 50000,
             created_at: now,
         };
-        assert_eq!(trade.base_amount, dec!(0.5));
-        assert_eq!(trade.price, dec!(50000.50));
+        assert_eq!(trade.base_amount, 50000);
+        assert_eq!(trade.price, 50000);
     }
 
     #[test]

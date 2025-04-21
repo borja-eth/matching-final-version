@@ -45,7 +45,6 @@
 //--------------------------------------------------------------------------------------------------
 
 use std::collections::HashMap;
-use rust_decimal::Decimal;
 use thiserror::Error;
 use uuid::Uuid;
 use chrono::Utc;
@@ -98,7 +97,7 @@ pub struct MatchingEngine {
     order_book: OrderBook,
     
     /// Maps order IDs to their location (side, price) for fast cancellation
-    order_index: HashMap<Uuid, (Side, Decimal)>,
+    order_index: HashMap<Uuid, (Side, i64)>,
     
     /// Sequence counter for assigning order priorities
     next_sequence_id: u64,
@@ -227,7 +226,7 @@ impl MatchingEngine {
         
         // For IOC orders that aren't fully filled, mark as cancelled
         if order.status != OrderStatus::Filled {
-            if order.status == OrderStatus::New {
+            if order.status == OrderStatus::Submitted {
                 order.status = OrderStatus::Cancelled;
             } else {
                 order.status = OrderStatus::PartiallyFilledCancelled;
@@ -249,7 +248,7 @@ impl MatchingEngine {
         
         // Market orders are always treated as IOC, so if not fully filled, mark as cancelled
         if order.status != OrderStatus::Filled {
-            if order.status == OrderStatus::New {
+            if order.status == OrderStatus::Submitted {
                 order.status = OrderStatus::Cancelled;
             } else {
                 order.status = OrderStatus::PartiallyFilledCancelled;
@@ -331,7 +330,7 @@ impl MatchingEngine {
                 None => return Err(MatchingError::InvalidOrder("Limit order must have a price".to_string())),
             }
         } else {
-            Decimal::ZERO // Dummy value for market orders, won't be used
+            0 // Dummy value for market orders, won't be used
         };
         
         // Pre-allocate trades vector to reduce allocations in the hot path
@@ -344,9 +343,9 @@ impl MatchingEngine {
             instrument_id: self.instrument_id,
             maker_order_id: Uuid::nil(),
             taker_order_id: order.id,
-            base_amount: Decimal::ZERO,
-            quote_amount: Decimal::ZERO,
-            price: Decimal::ZERO,
+            base_amount: 0,
+            quote_amount: 0,
+            price: 0,
             created_at: Utc::now(),
         };
         
@@ -358,7 +357,7 @@ impl MatchingEngine {
         let is_market_order = order.order_type == OrderType::Market;
         
         // Early check for filled status
-        if remaining_base.is_zero() {
+        if remaining_base == 0 {
             order.status = OrderStatus::Filled;
             return Ok(result);
         }
@@ -398,23 +397,19 @@ impl MatchingEngine {
             }
             
             // Remove the order from the book - we've already checked everything we need
-            let mut opposing_order = match self.order_book.remove_order(
-                opposing_id,
-                opposite_side,
-                opposing_price
-            ) {
-                Some(order) => order,
-                None => return Err(MatchingError::OrderNotFound(opposing_id)),
+            let mut opposing_order = match self.order_book.remove_order(opposing_id) {
+                Ok(order) => order,
+                Err(_) => return Err(MatchingError::OrderNotFound(opposing_id)),
             };
             
             // Add to removals for batch processing
             removals.push(opposing_order.clone());
             
             // Calculate matched quantity
-            let matched_qty = Decimal::min(remaining_base, opposing_order.remaining_base);
+            let matched_qty = std::cmp::min(remaining_base, opposing_order.remaining_base);
             
             // Calculate quote amount using the previously obtained opposing price
-            let quote_amount = matched_qty * opposing_price;
+            let quote_amount = matched_qty * opposing_price as u64;
             
             // Update trade object without creating a new one
             trade.id = Uuid::new_v4();
@@ -434,11 +429,11 @@ impl MatchingEngine {
             opposing_order.filled_quote += quote_amount;
             
             // Update order statuses
-            if order.status == OrderStatus::New && !remaining_base.is_zero() {
+            if order.status == OrderStatus::Submitted && remaining_base != 0 {
                 order.status = OrderStatus::PartiallyFilled;
             }
             
-            if opposing_order.remaining_base.is_zero() {
+            if opposing_order.remaining_base == 0 {
                 opposing_order.status = OrderStatus::Filled;
             } else {
                 opposing_order.status = OrderStatus::PartiallyFilled;
@@ -450,7 +445,7 @@ impl MatchingEngine {
             result.affected_orders.push(opposing_order);
             
             // Exit if order is fully filled
-            if remaining_base.is_zero() {
+            if remaining_base == 0 {
                 order.status = OrderStatus::Filled;
                 break;
             }
@@ -469,7 +464,7 @@ impl MatchingEngine {
             
             // Add to book, update index and depth tracker for added orders
             for added_order in &additions {
-                self.order_book.add_order(added_order.clone());
+                let _ = self.order_book.add_order(added_order.clone());
                 if let Some(price) = added_order.limit_price {
                     self.order_index.insert(added_order.id, (added_order.side, price));
                     self.depth_tracker.update_order_added(added_order);
@@ -478,7 +473,7 @@ impl MatchingEngine {
         }
         
         // For market orders with no matches, return an error
-        if is_market_order && order.status == OrderStatus::New && result.trades.is_empty() {
+        if is_market_order && order.status == OrderStatus::Submitted && result.trades.is_empty() {
             return Err(MatchingError::InsufficientLiquidity);
         }
         
@@ -491,7 +486,7 @@ impl MatchingEngine {
     #[inline]
     fn add_to_book(&mut self, order: &Order) {
         if let Some(price) = order.limit_price {
-            self.order_book.add_order(order.clone());
+            let _ = self.order_book.add_order(order.clone());
             self.order_index.insert(order.id, (order.side, price));
             // Update depth tracker
             self.depth_tracker.update_order_added(order);
@@ -508,16 +503,16 @@ impl MatchingEngine {
     #[inline]
     pub fn cancel_order(&mut self, order_id: Uuid) -> MatchingResult<Order> {
         // Look up the order location in our index
-        if let Some((side, price)) = self.order_index.remove(&order_id) {
-            if let Some(mut order) = self.order_book.remove_order(order_id, side, price) {
+        if let Some((_side, _price)) = self.order_index.remove(&order_id) {
+            if let Ok(mut order) = self.order_book.remove_order(order_id) {
                 // Update depth tracker
                 self.depth_tracker.update_order_removed(&order);
                 
                 // Update order status
-                if order.status == OrderStatus::PartiallyFilled {
-                    order.status = OrderStatus::PartiallyFilledCancelled;
-                } else {
+                if order.status == OrderStatus::Submitted {
                     order.status = OrderStatus::Cancelled;
+                } else {
+                    order.status = OrderStatus::PartiallyFilledCancelled;
                 }
                 
                 // Emit cancel event
@@ -563,14 +558,14 @@ impl MatchingEngine {
             // Emit event for the processed order
             if let Some(ref order) = result.processed_order {
                 let order_event = match order.status {
-                    OrderStatus::New => MatchingEngineEvent::OrderAdded {
+                    OrderStatus::Submitted => MatchingEngineEvent::OrderAdded {
                         order: order.clone(),
                         timestamp: Utc::now(),
                     },
                     OrderStatus::PartiallyFilled | OrderStatus::Filled => {
                         MatchingEngineEvent::OrderMatched {
                             order: order.clone(),
-                            matched_quantity: order.filled_base,
+                            matched_quantity: order.filled_base as u64,
                             timestamp: Utc::now(),
                         }
                     },
@@ -590,7 +585,7 @@ impl MatchingEngine {
             for order in &result.affected_orders {
                 let affected_event = MatchingEngineEvent::OrderMatched {
                     order: order.clone(),
-                    matched_quantity: order.filled_base,
+                    matched_quantity: order.filled_base as u64,
                     timestamp: Utc::now(),
                 };
                 
@@ -629,21 +624,20 @@ impl MatchingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal_macros::dec;
     use crate::types::CreatedFrom;
     
     // Helper function to create test orders
     fn create_test_order(
         side: Side, 
         order_type: OrderType, 
-        price: Option<Decimal>, 
-        quantity: Decimal,
+        price: Option<i64>, 
+        quantity: u64,
         instrument_id: Uuid
     ) -> Order {
         let now = Utc::now();
         let remaining_quote = match price {
-            Some(p) => p * quantity,
-            None => dec!(0),
+            Some(p) => p as u64 * quantity,
+            None => 0,
         };
         
         Order {
@@ -657,16 +651,17 @@ mod tests {
             trigger_price: None,
             base_amount: quantity,
             remaining_base: quantity,
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
+            filled_quote: 0,
+            filled_base: 0,
             remaining_quote,
             expiration_date: now + chrono::Duration::days(365),
-            status: OrderStatus::New,
+            status: OrderStatus::Submitted,
             created_at: now,
             updated_at: now,
             trigger_by: None,
             created_from: CreatedFrom::Api,
             sequence_id: 0, // Will be set by engine
+            time_in_force: TimeInForce::GTC,
         }
     }
     
@@ -679,8 +674,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -694,14 +689,14 @@ mod tests {
             Some(order) => order,
             None => panic!("Expected processed order to be present"),
         };
-        assert_eq!(processed_order.status, OrderStatus::New);
+        assert_eq!(processed_order.status, OrderStatus::Submitted);
         
         // Add a matching GTC sell order
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -727,8 +722,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -741,8 +736,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -768,8 +763,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -782,8 +777,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -812,8 +807,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -824,14 +819,14 @@ mod tests {
             Side::Bid, 
             OrderType::Market, 
             None, 
-            dec!(1.0),
+            1,
             instrument_id
         );
         
         let result = engine.process_order(market_order, TimeInForce::GTC).unwrap();
         assert_eq!(result.trades.len(), 1);
         assert_eq!(result.processed_order.unwrap().status, OrderStatus::Filled);
-        assert_eq!(result.trades[0].price, dec!(100.0));
+        assert_eq!(result.trades[0].price, 100000);
     }
     
     #[test]
@@ -844,7 +839,7 @@ mod tests {
             Side::Bid, 
             OrderType::Market, 
             None, 
-            dec!(1.0),
+            1,
             instrument_id
         );
         
@@ -861,8 +856,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -899,8 +894,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(2.0), // Order for 2 units
+            Some(100), 
+            2, // Order for 2 units
             instrument_id
         );
         
@@ -910,8 +905,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0), // Only 1 unit
+            Some(100), 
+            1, // Only 1 unit
             instrument_id
         );
         
@@ -919,17 +914,17 @@ mod tests {
         
         // Check trades
         assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].base_amount, dec!(1.0));
+        assert_eq!(result.trades[0].base_amount, 100000);
         
         // Check affected order (the buy order should be partially filled)
         assert_eq!(result.affected_orders.len(), 1);
         assert_eq!(result.affected_orders[0].status, OrderStatus::PartiallyFilled);
-        assert_eq!(result.affected_orders[0].remaining_base, dec!(1.0));
-        assert_eq!(result.affected_orders[0].filled_base, dec!(1.0));
+        assert_eq!(result.affected_orders[0].remaining_base, 100000);
+        assert_eq!(result.affected_orders[0].filled_base, 100000);
         
         // Check if the order is still in the book
         let best_bid = engine.order_book.get_best_bid().unwrap();
-        assert_eq!(best_bid.remaining_base, dec!(1.0));
+        assert_eq!(best_bid.remaining_base, 100000);
     }
 
     #[test]
@@ -941,8 +936,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(5.0),
+            Some(100), 
+            5,
             instrument_id
         );
         
@@ -954,22 +949,22 @@ mod tests {
             let sell_order = create_test_order(
                 Side::Ask, 
                 OrderType::Limit, 
-                Some(dec!(100.0)), 
-                dec!(1.0),
+                Some(100), 
+                1,
                 instrument_id
             );
             
             let result = engine.process_order(sell_order, TimeInForce::GTC).unwrap();
             assert_eq!(result.trades.len(), 1);
-            assert_eq!(result.trades[0].base_amount, dec!(1.0));
+            assert_eq!(result.trades[0].base_amount, 100000);
             assert!(result.affected_orders.len() > 0);
         }
         
         // Verify the buy order is still partially filled
         let best_bid = engine.order_book.get_best_bid().unwrap();
         assert_eq!(best_bid.id, buy_order_id);
-        assert_eq!(best_bid.remaining_base, dec!(2.0));
-        assert_eq!(best_bid.filled_base, dec!(3.0));
+        assert_eq!(best_bid.remaining_base, 200000);
+        assert_eq!(best_bid.filled_base, 300000);
         assert_eq!(best_bid.status, OrderStatus::PartiallyFilled);
     }
     
@@ -982,8 +977,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(90.0)), 
-            dec!(1.0),
+            Some(90), 
+            1,
             instrument_id
         );
         
@@ -993,8 +988,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1002,7 +997,7 @@ mod tests {
         
         // Verify buyer got price improvement
         assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].price, dec!(90.0)); // Matched at 90, not 100
+        assert_eq!(result.trades[0].price, 90000);
     }
     
     #[test]
@@ -1015,8 +1010,8 @@ mod tests {
         let order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             wrong_instrument_id // Different from engine's instrument
         );
         
@@ -1033,8 +1028,8 @@ mod tests {
         let mut order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1064,8 +1059,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(2.0),
+            Some(100), 
+            2,
             instrument_id
         );
         
@@ -1076,8 +1071,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1086,8 +1081,8 @@ mod tests {
         // Cancel the partially filled order
         let cancelled = engine.cancel_order(buy_order_id).unwrap();
         assert_eq!(cancelled.status, OrderStatus::PartiallyFilledCancelled);
-        assert_eq!(cancelled.filled_base, dec!(1.0));
-        assert_eq!(cancelled.remaining_base, dec!(1.0));
+        assert_eq!(cancelled.filled_base, 100000);
+        assert_eq!(cancelled.remaining_base, 100000);
     }
     
     #[test]
@@ -1099,24 +1094,24 @@ mod tests {
         let buy_order1 = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(101.0)), // Highest price
-            dec!(1.0),
+            Some(101), // Highest price
+            1,
             instrument_id
         );
         
         let buy_order2 = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
         let buy_order3 = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(99.0)), 
-            dec!(1.0),
+            Some(99), 
+            1,
             instrument_id
         );
         
@@ -1129,8 +1124,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(99.0)), 
-            dec!(1.0),
+            Some(99), 
+            1,
             instrument_id
         );
         
@@ -1138,11 +1133,11 @@ mod tests {
         
         // Verify matched with highest price (101)
         assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].price, dec!(101.0));
+        assert_eq!(result.trades[0].price, 101000);
         
         // Best bid should now be the 100 price
         let best_bid = engine.order_book.get_best_bid().unwrap();
-        assert_eq!(best_bid.limit_price.unwrap(), dec!(100.0));
+        assert_eq!(best_bid.limit_price.unwrap(), 100000);
     }
     
     #[test]
@@ -1154,8 +1149,8 @@ mod tests {
         let buy_order1 = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)),
-            dec!(1.0),
+            Some(100),
+            1,
             instrument_id
         );
         
@@ -1166,8 +1161,8 @@ mod tests {
         let buy_order2 = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)),
-            dec!(1.0),
+            Some(100),
+            1,
             instrument_id
         );
         
@@ -1177,8 +1172,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1198,8 +1193,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1000000.0), // 1 million units
+            Some(100), 
+            1000000, // 1 million units
             instrument_id
         );
         
@@ -1209,8 +1204,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1000000.0),
+            Some(100), 
+            1000000,
             instrument_id
         );
         
@@ -1218,8 +1213,8 @@ mod tests {
         
         // Verify matched correctly with large quantities
         assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].base_amount, dec!(1000000.0));
-        assert_eq!(result.trades[0].quote_amount, dec!(100000000.0)); // 100M (1M * 100)
+        assert_eq!(result.trades[0].base_amount, 1000000000);
+        assert_eq!(result.trades[0].quote_amount, 100000000000);
     }
     
     #[test]
@@ -1231,8 +1226,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(0.0001), // Very small amount
+            Some(100), 
+            1, // Very small amount
             instrument_id
         );
         
@@ -1242,8 +1237,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(0.0001),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1251,8 +1246,8 @@ mod tests {
         
         // Verify matched correctly with small quantities
         assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].base_amount, dec!(0.0001));
-        assert_eq!(result.trades[0].quote_amount, dec!(0.0100)); // 0.0001 * 100
+        assert_eq!(result.trades[0].base_amount, 1);
+        assert_eq!(result.trades[0].quote_amount, 100);
     }
     
     #[test]
@@ -1266,16 +1261,16 @@ mod tests {
         
         // Add ask orders
         let ask_orders = vec![
-            create_test_order(Side::Ask, OrderType::Limit, Some(dec!(102.0)), dec!(1.0), instrument_id),
-            create_test_order(Side::Ask, OrderType::Limit, Some(dec!(103.0)), dec!(2.0), instrument_id),
-            create_test_order(Side::Ask, OrderType::Limit, Some(dec!(105.0)), dec!(3.0), instrument_id),
+            create_test_order(Side::Ask, OrderType::Limit, Some(102), 1, instrument_id),
+            create_test_order(Side::Ask, OrderType::Limit, Some(103), 2, instrument_id),
+            create_test_order(Side::Ask, OrderType::Limit, Some(105), 3, instrument_id),
         ];
         
         // Add bid orders
         let bid_orders = vec![
-            create_test_order(Side::Bid, OrderType::Limit, Some(dec!(98.0)), dec!(1.0), instrument_id),
-            create_test_order(Side::Bid, OrderType::Limit, Some(dec!(97.0)), dec!(2.0), instrument_id),
-            create_test_order(Side::Bid, OrderType::Limit, Some(dec!(95.0)), dec!(3.0), instrument_id),
+            create_test_order(Side::Bid, OrderType::Limit, Some(98), 1, instrument_id),
+            create_test_order(Side::Bid, OrderType::Limit, Some(97), 2, instrument_id),
+            create_test_order(Side::Bid, OrderType::Limit, Some(95), 3, instrument_id),
         ];
         
         // Process orders
@@ -1291,15 +1286,15 @@ mod tests {
         let best_ask = engine.order_book.get_best_ask().unwrap();
         let best_bid = engine.order_book.get_best_bid().unwrap();
         
-        assert_eq!(best_ask.limit_price.unwrap(), dec!(102.0));
-        assert_eq!(best_bid.limit_price.unwrap(), dec!(98.0));
+        assert_eq!(best_ask.limit_price.unwrap(), 102000);
+        assert_eq!(best_bid.limit_price.unwrap(), 98000);
         
         // Add an aggressive buy order that crosses multiple levels
         let aggressive_buy = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(104.0)), // This should match 102 and 103 but not 105
-            dec!(5.0),
+            Some(104), // This should match 102 and 103 but not 105
+            5,
             instrument_id
         );
         
@@ -1307,20 +1302,20 @@ mod tests {
         
         // Should match against first two ask levels
         assert_eq!(result.trades.len(), 2);
-        assert_eq!(result.trades[0].price, dec!(102.0)); // First match at 102
-        assert_eq!(result.trades[1].price, dec!(103.0)); // Second match at 103
-        assert_eq!(result.trades[0].base_amount, dec!(1.0));
-        assert_eq!(result.trades[1].base_amount, dec!(2.0));
+        assert_eq!(result.trades[0].price, 102000);
+        assert_eq!(result.trades[1].price, 103000);
+        assert_eq!(result.trades[0].base_amount, 100000);
+        assert_eq!(result.trades[1].base_amount, 200000);
         
         // Verify remaining order quantity and status
         let processed = result.processed_order.unwrap();
         assert_eq!(processed.status, OrderStatus::PartiallyFilled);
-        assert_eq!(processed.filled_base, dec!(3.0)); // 1 + 2
-        assert_eq!(processed.remaining_base, dec!(2.0)); // 5 - 3
+        assert_eq!(processed.filled_base, 300000);
+        assert_eq!(processed.remaining_base, 200000);
         
         // Best ask should now be 105
         let best_ask = engine.order_book.get_best_ask().unwrap();
-        assert_eq!(best_ask.limit_price.unwrap(), dec!(105.0));
+        assert_eq!(best_ask.limit_price.unwrap(), 105000);
     }
     
     #[test]
@@ -1333,10 +1328,10 @@ mod tests {
             Side::Bid, 
             OrderType::Stop, 
             None, // Stop orders don't have limit price
-            dec!(1.0),
+            1,
             instrument_id
         );
-        stop_order.trigger_price = Some(dec!(100.0));
+        stop_order.trigger_price = Some(100);
         
         let result = engine.process_order(stop_order, TimeInForce::GTC).unwrap();
         
@@ -1357,11 +1352,11 @@ mod tests {
         let mut stop_limit_order = create_test_order(
             Side::Bid, 
             OrderType::StopLimit, 
-            Some(dec!(99.0)), // Limit price
-            dec!(1.0),
+            Some(99), // Limit price
+            1,
             instrument_id
         );
-        stop_limit_order.trigger_price = Some(dec!(100.0)); // Trigger price
+        stop_limit_order.trigger_price = Some(100); // Trigger price
         
         let result = engine.process_order(stop_limit_order, TimeInForce::GTC).unwrap();
         
@@ -1383,7 +1378,7 @@ mod tests {
             Side::Bid, 
             OrderType::Stop, 
             None,
-            dec!(1.0),
+            1,
             instrument_id
         );
         // Intentionally not setting trigger_price
@@ -1401,8 +1396,8 @@ mod tests {
         let stop_limit_order1 = create_test_order(
             Side::Bid, 
             OrderType::StopLimit, 
-            Some(dec!(99.0)), // Has limit price
-            dec!(1.0),
+            Some(99), // Has limit price
+            1,
             instrument_id
         );
         // Intentionally not setting trigger_price
@@ -1415,10 +1410,10 @@ mod tests {
             Side::Bid, 
             OrderType::StopLimit, 
             None, // No limit price
-            dec!(1.0),
+            1,
             instrument_id
         );
-        stop_limit_order2.trigger_price = Some(dec!(100.0));
+        stop_limit_order2.trigger_price = Some(100);
         
         let result2 = engine.process_order(stop_limit_order2, TimeInForce::GTC);
         assert!(matches!(result2, Err(MatchingError::InvalidOrder(_))));
@@ -1475,8 +1470,8 @@ mod tests {
         let order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1559,8 +1554,8 @@ mod tests {
         let sell_order = create_test_order(
             Side::Ask, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
@@ -1570,8 +1565,8 @@ mod tests {
         let buy_order = create_test_order(
             Side::Bid, 
             OrderType::Limit, 
-            Some(dec!(100.0)), 
-            dec!(1.0),
+            Some(100), 
+            1,
             instrument_id
         );
         
