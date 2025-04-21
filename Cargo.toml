@@ -46,6 +46,14 @@ serde_json = "1.0"
 name = "orderbook_bench"
 harness = false
 
+[[bench]]
+name = "matching_engine_bench"
+harness = false
+
+[[bench]]
+name = "engine_bench"
+harness = false
+
 [[bin]]
 name = "market_maker"
 path = "src/bin/market_maker.rs"

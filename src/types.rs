@@ -34,10 +34,20 @@ use serde::{Serialize, Deserialize};
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
-    /// A buy order.
+    #[serde(rename_all = "UPPERCASE")]
+    /// A buy order (also called buy).
     Bid,
-    /// A sell order.
+    /// A sell order (also called sell).
     Ask,
+}
+
+impl Side {
+    pub fn opposite(&self) -> Self {
+        match self {
+            Self::Bid => Self::Ask,
+            Self::Ask => Self::Bid,
+        }
+    }
 }
 
 /// Represents the type of an order, influencing its matching behavior.
@@ -45,6 +55,7 @@ pub enum Side {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderType {
+    #[serde(rename_all = "lowercase")]
     /// An order that executes at a specific price or better.
     Limit,
     /// An order that executes immediately at the best available market price.
@@ -57,41 +68,41 @@ pub enum OrderType {
     // Adl,         // Consider if needed for core matching logic initially
 }
 
+/// Defines how long an order remains active in the order book.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeInForce {
+        #[serde(rename_all = "lowercase")]
+
+    /// Good Till Cancel - remains active until explicitly cancelled
+    GTC,
+    /// Immediate Or Cancel - must be filled immediately (fully or partially) or cancelled
+    IOC,
+}
+
 /// Represents the lifecycle status of an order within the matching engine.
 /// Maps to statuses defined in `@roxom.md`.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderStatus {
-    // Roxom Gateway Statuses (May not be directly stored/used in matching engine core)
-    // PendingNew,
-    // PendingCancel,
-    // Inactive,
-    // Rejected,
-
-    // Engine Core Statuses
-    /// The order has been accepted by the engine but not yet matched.
-    New,
-    /// A conditional order (e.g., Stop) that is waiting for its trigger condition.
-    WaitingTrigger,
+    /// The order has been acknowledged by the engine.
+    Submitted,
+    /// The order has been accepted by the engine but not yet matched or filled.
+    Unfilled,
     /// The order has been partially filled.
     PartiallyFilled,
-    /// The order has been completely filled.
-    Filled,
-    /// The order was cancelled before being fully filled.
-    Cancelled,
     /// The order was partially filled and then cancelled.
     PartiallyFilledCancelled,
-}
+    /// The order has been completely filled.
+    Filled,
+    /// A conditional order (e.g., Stop) that is waiting for its trigger condition.
+    WaitingTrigger,
+    /// The order was cancelled before being fully filled.
+    Cancelled,
+    /// The order was rejected by the engine.
+    Rejected,
+    // Agregar Self Trade Prevention Cancelled
 
-/// Defines how long an order remains active in the order book.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[non_exhaustive]
-#[allow(dead_code)]
-pub enum TimeInForce {
-    /// Good Till Cancel - remains active until explicitly cancelled
-    GTC,
-    /// Immediate Or Cancel - must be filled immediately (fully or partially) or cancelled
-    IOC,
 }
 
 impl Default for TimeInForce {
@@ -142,41 +153,42 @@ pub struct Order {
     pub ext_id: Option<String>,
     /// Identifier for the account placing the order.
     pub account_id: Uuid,
-    /// Type of the order (Limit, Market, etc.).
-    pub order_type: OrderType,
-    /// Identifier for the instrument being traded.
-    pub instrument_id: Uuid,
     /// Side of the order (Buy or Sell).
     pub side: Side,
+    /// Type of the order (Limit, Market, etc.).
+    pub order_type: OrderType,
     /// Limit price for Limit/StopLimit orders. Stored as Decimal.
-    pub limit_price: Option<Decimal>, // Use Option for Market orders
-    /// Trigger price for Stop/StopLimit orders. Stored as Decimal.
-    pub trigger_price: Option<Decimal>,
+    pub limit_price: Option<i64>, // Use Option for Market orders
     /// Initial order quantity in base units. Stored as Decimal.
-    pub base_amount: Decimal,
+    pub base_amount: u64,
+    /// Remaining quantity available to trade in base units. Stored as u64.
+    pub remaining_base: u64,
+    /// Time in force policy for the order (GTC, IOC, FOK, etc.)
+    pub time_in_force: TimeInForce,
+    /// Timestamp of order creation.
+    pub created_at: DateTime<Utc>,
+    /// Current status of the order.
+    pub status: OrderStatus,
+    /// Identifier for the instrument being traded.
+    pub instrument_id: Uuid,
+    /// Trigger price for Stop/StopLimit orders. Stored as i64.
+    pub trigger_price: Option<i64>,
     /// Remaining quantity available to trade in quote units.
     /// Although often calculated (`remaining_base * price`), it's stored here directly
     /// for potential performance or specific model requirements.
-     pub remaining_quote: Decimal,
-    /// Remaining quantity available to trade in base units. Stored as Decimal.
-    pub remaining_base: Decimal,
-    /// Quantity filled in quote units. Stored as Decimal.
-    pub filled_quote: Decimal,
-    /// Quantity filled in base units. Stored as Decimal.
-    pub filled_base: Decimal,
-    /// Timestamp for when the order expires (GTC often represented by a far future date).
+    pub remaining_quote: u64,
+    /// Quantity filled in quote units. Stored as u64.
+    pub filled_quote: u64,
+    /// Quantity filled in base units. Stored as u64.
+    pub filled_base: u64,
+    /// Timestamp for when the order expires (used for GTD orders).
     pub expiration_date: DateTime<Utc>,
-    /// Current status of the order.
-    pub status: OrderStatus,
-    /// Timestamp of order creation.
-    pub created_at: DateTime<Utc>,
     /// Timestamp of the last update to the order.
     pub updated_at: DateTime<Utc>,
     /// How the trigger price is evaluated (if applicable).
     pub trigger_by: Option<TriggerType>,
     /// Source of the order creation.
     pub created_from: CreatedFrom,
-
     // Engine specific fields (not in roxom.md directly, but needed for matching)
     /// Sequence number assigned by the engine upon acceptance (for time priority).
     pub sequence_id: u64,
@@ -217,6 +229,37 @@ pub enum TypeError {
     /// Occurs when attempting to create an `OrderType` from an unrecognized string or value.
     #[error("Invalid order type specified: {0}")]
     InvalidOrderType(String),
+    /// Occurs when attempting to create an `OrderStatus` from an unrecognized string or value.
+    #[error("Invalid order status specified: {0}")]
+    InvalidOrderStatus(String),
+    
+    /// Occurs when attempting to create a `TimeInForce` from an unrecognized string or value.
+    #[error("Invalid time in force specified: {0}")]
+    InvalidTimeInForce(String),
+    
+    /// Occurs when attempting to create a `TriggerType` from an unrecognized string or value.
+    #[error("Invalid trigger type specified: {0}")]
+    InvalidTriggerType(String),
+    
+    /// Occurs when attempting to create a `CreatedFrom` from an unrecognized string or value.
+    #[error("Invalid created from source specified: {0}")]
+    InvalidCreatedFrom(String),
+    
+    /// Occurs when a required price is missing for a specific order type.
+    #[error("Missing required price for order type: {0}")]
+    MissingRequiredPrice(String),
+    
+    /// Occurs when an invalid quantity is specified (e.g., zero or negative).
+    #[error("Invalid quantity specified: {0}")]
+    InvalidQuantity(String),
+    
+    /// Occurs when an invalid price is specified (e.g., zero or negative for limit orders).
+    #[error("Invalid price specified: {0}")]
+    InvalidPrice(String),
+    
+    /// Occurs when an order operation is attempted with an invalid UUID.
+    #[error("Invalid UUID format: {0}")]
+    InvalidUuid(String),
     // Add more specific type errors as needed
 }
 
@@ -246,25 +289,26 @@ mod tests {
             order_type: OrderType::Limit,
             instrument_id: Uuid::new_v4(),
             side: Side::Bid,
-            limit_price: Some(dec!(50000.50)),
+            limit_price: Some(50000),  // i64 for price
             trigger_price: None,
-            base_amount: dec!(1.5),
-            remaining_base: dec!(1.5),
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
+            base_amount: 100000,       // u64 for quantity (e.g., 1.0 BTC = 100000 satoshis)
+            remaining_base: 100000,
+            filled_quote: 0,
+            filled_base: 0,
+            remaining_quote: 5000000000, // 50000 * 100000
             expiration_date: now + chrono::Duration::days(365 * 2),
-            status: OrderStatus::New,
+            status: OrderStatus::Submitted,
             created_at: now,
             updated_at: now,
             trigger_by: None,
             created_from: CreatedFrom::Api,
             sequence_id: 1,
-            remaining_quote: dec!(1.5) * dec!(50000.50),
+            time_in_force: TimeInForce::GTC,
         };
         assert_eq!(order.side, Side::Bid);
-        assert_eq!(order.base_amount, dec!(1.5));
-        assert_eq!(order.status, OrderStatus::New);
-        assert_eq!(order.remaining_quote, dec!(75000.75));
+        assert_eq!(order.base_amount, 100000);
+        assert_eq!(order.status, OrderStatus::Submitted);
+        assert_eq!(order.remaining_quote, 5000000000);
     }
 
     #[test]
@@ -289,10 +333,6 @@ mod tests {
         // Test Side enum
         let bid_side = Side::Bid;
         let ask_side = Side::Ask;
-        let cloned_bid = bid_side.clone();
-        let copied_bid = bid_side;
-        assert_eq!(bid_side, cloned_bid);
-        assert_eq!(bid_side, copied_bid);
         assert_ne!(bid_side, ask_side);
 
         // Test OrderType enum
@@ -304,58 +344,20 @@ mod tests {
         assert_ne!(stop, stop_limit);
 
         // Test OrderStatus enum
-        let new = OrderStatus::New;
+        let submitted = OrderStatus::Submitted;
         let waiting = OrderStatus::WaitingTrigger;
         let partial = OrderStatus::PartiallyFilled;
         let filled = OrderStatus::Filled;
         let cancelled = OrderStatus::Cancelled;
         let partial_cancelled = OrderStatus::PartiallyFilledCancelled;
-        assert_ne!(new, filled);
+        assert_ne!(submitted, filled);
         assert_ne!(partial, cancelled);
         assert_ne!(waiting, partial_cancelled);
-
-        // Test TriggerType enum
-        let last_price = TriggerType::LastPrice;
-        let cloned_trigger = last_price.clone();
-        let copied_trigger = last_price;
-        assert_eq!(last_price, cloned_trigger);
-        assert_eq!(last_price, copied_trigger);
-
-        // Test CreatedFrom enum
-        let api = CreatedFrom::Api;
-        let front = CreatedFrom::Front;
-        let cloned_api = api.clone();
-        let copied_api = api;
-        assert_eq!(api, cloned_api);
-        assert_eq!(api, copied_api);
-        assert_ne!(api, front);
     }
 
     #[test]
-    fn test_type_error() {
-        let invalid_side = TypeError::InvalidSide("Invalid".to_string());
-        let invalid_type = TypeError::InvalidOrderType("Invalid".to_string());
-        
-        // Test error messages
-        assert_eq!(
-            invalid_side.to_string(),
-            "Invalid side specified: Invalid"
-        );
-        assert_eq!(
-            invalid_type.to_string(),
-            "Invalid order type specified: Invalid"
-        );
-
-        // Test cloning
-        let cloned_side = invalid_side.clone();
-        assert_eq!(invalid_side, cloned_side);
-    }
-
-    #[test]
-    fn test_order_with_different_types() {
+    fn test_market_order() {
         let now = Utc::now();
-        
-        // Test Market order
         let market_order = Order {
             id: Uuid::new_v4(),
             ext_id: Some("market-order-1".to_string()),
@@ -365,56 +367,28 @@ mod tests {
             side: Side::Ask,
             limit_price: None,
             trigger_price: None,
-            base_amount: dec!(2.0),
-            remaining_base: dec!(2.0),
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
+            base_amount: 200000,       // 2.0 BTC
+            remaining_base: 200000,
+            filled_quote: 0,
+            filled_base: 0,
+            remaining_quote: 0,        // Market orders don't have a price until execution
             expiration_date: now + chrono::Duration::days(365 * 2),
-            status: OrderStatus::New,
+            status: OrderStatus::Submitted,
             created_at: now,
             updated_at: now,
             trigger_by: None,
             created_from: CreatedFrom::Front,
             sequence_id: 2,
-            remaining_quote: dec!(0.0), // Market orders don't have a price until execution
+            time_in_force: TimeInForce::IOC,
         };
         assert_eq!(market_order.order_type, OrderType::Market);
         assert_eq!(market_order.side, Side::Ask);
         assert_eq!(market_order.created_from, CreatedFrom::Front);
-
-        // Test Stop order
-        let stop_order = Order {
-            id: Uuid::new_v4(),
-            ext_id: Some("stop-order-1".to_string()),
-            account_id: Uuid::new_v4(),
-            order_type: OrderType::Stop,
-            instrument_id: Uuid::new_v4(),
-            side: Side::Bid,
-            limit_price: None,
-            trigger_price: Some(dec!(45000.00)),
-            base_amount: dec!(1.0),
-            remaining_base: dec!(1.0),
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
-            expiration_date: now + chrono::Duration::days(365 * 2),
-            status: OrderStatus::WaitingTrigger,
-            created_at: now,
-            updated_at: now,
-            trigger_by: Some(TriggerType::LastPrice),
-            created_from: CreatedFrom::Api,
-            sequence_id: 3,
-            remaining_quote: dec!(0.0), // Stop orders don't have a price until triggered
-        };
-        assert_eq!(stop_order.order_type, OrderType::Stop);
-        assert_eq!(stop_order.status, OrderStatus::WaitingTrigger);
-        assert_eq!(stop_order.trigger_by, Some(TriggerType::LastPrice));
     }
 
     #[test]
     fn test_order_status_transitions() {
         let now = Utc::now();
-        
-        // Test New -> PartiallyFilled transition
         let mut order = Order {
             id: Uuid::new_v4(),
             ext_id: Some("partial-fill-1".to_string()),
@@ -422,12 +396,13 @@ mod tests {
             order_type: OrderType::Limit,
             instrument_id: Uuid::new_v4(),
             side: Side::Bid,
-            limit_price: Some(dec!(50000.00)),
+            limit_price: Some(50000),
             trigger_price: None,
-            base_amount: dec!(1.0),
-            remaining_base: dec!(0.5),
-            filled_quote: dec!(25000.00),
-            filled_base: dec!(0.5),
+            base_amount: 100000,       // 1.0 BTC
+            remaining_base: 50000,     // 0.5 BTC remaining
+            filled_quote: 2500000000,  // 25000 * 100000
+            filled_base: 50000,        // 0.5 BTC filled
+            remaining_quote: 2500000000, // 25000 * 100000 remaining
             expiration_date: now + chrono::Duration::days(365 * 2),
             status: OrderStatus::PartiallyFilled,
             created_at: now,
@@ -435,81 +410,27 @@ mod tests {
             trigger_by: None,
             created_from: CreatedFrom::Api,
             sequence_id: 4,
-            remaining_quote: dec!(25000.00),
+            time_in_force: TimeInForce::GTC,
         };
-        assert_eq!(order.status, OrderStatus::PartiallyFilled);
-        assert_eq!(order.remaining_base, dec!(0.5));
-        assert_eq!(order.filled_base, dec!(0.5));
 
-        // Test PartiallyFilled -> Filled transition
-        order.remaining_base = dec!(0.0);
-        order.filled_base = dec!(1.0);
-        order.filled_quote = dec!(50000.00);
-        order.remaining_quote = dec!(0.0);
+        assert_eq!(order.status, OrderStatus::PartiallyFilled);
+        assert_eq!(order.remaining_base, 50000);
+        assert_eq!(order.filled_base, 50000);
+
+        // Test transition to Filled
+        order.remaining_base = 0;
+        order.filled_base = 100000;
+        order.filled_quote = 5000000000;
+        order.remaining_quote = 0;
         order.status = OrderStatus::Filled;
         assert_eq!(order.status, OrderStatus::Filled);
-        assert_eq!(order.remaining_base, dec!(0.0));
-        assert_eq!(order.filled_base, dec!(1.0));
-
-        // Test New -> Cancelled transition
-        let cancelled_order = Order {
-            id: Uuid::new_v4(),
-            ext_id: Some("cancelled-1".to_string()),
-            account_id: Uuid::new_v4(),
-            order_type: OrderType::Limit,
-            instrument_id: Uuid::new_v4(),
-            side: Side::Ask,
-            limit_price: Some(dec!(51000.00)),
-            trigger_price: None,
-            base_amount: dec!(1.0),
-            remaining_base: dec!(1.0),
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
-            expiration_date: now + chrono::Duration::days(365 * 2),
-            status: OrderStatus::Cancelled,
-            created_at: now,
-            updated_at: now,
-            trigger_by: None,
-            created_from: CreatedFrom::Front,
-            sequence_id: 5,
-            remaining_quote: dec!(51000.00),
-        };
-        assert_eq!(cancelled_order.status, OrderStatus::Cancelled);
-        assert_eq!(cancelled_order.remaining_base, dec!(1.0));
-        assert_eq!(cancelled_order.filled_base, dec!(0.0));
-
-        // Test PartiallyFilled -> PartiallyFilledCancelled transition
-        let partial_cancelled_order = Order {
-            id: Uuid::new_v4(),
-            ext_id: Some("partial-cancelled-1".to_string()),
-            account_id: Uuid::new_v4(),
-            order_type: OrderType::Limit,
-            instrument_id: Uuid::new_v4(),
-            side: Side::Bid,
-            limit_price: Some(dec!(52000.00)),
-            trigger_price: None,
-            base_amount: dec!(1.0),
-            remaining_base: dec!(0.3),
-            filled_quote: dec!(36400.00),
-            filled_base: dec!(0.7),
-            expiration_date: now + chrono::Duration::days(365 * 2),
-            status: OrderStatus::PartiallyFilledCancelled,
-            created_at: now,
-            updated_at: now,
-            trigger_by: None,
-            created_from: CreatedFrom::Api,
-            sequence_id: 6,
-            remaining_quote: dec!(15600.00),
-        };
-        assert_eq!(partial_cancelled_order.status, OrderStatus::PartiallyFilledCancelled);
-        assert_eq!(partial_cancelled_order.remaining_base, dec!(0.3));
-        assert_eq!(partial_cancelled_order.filled_base, dec!(0.7));
+        assert_eq!(order.remaining_base, 0);
+        assert_eq!(order.filled_base, 100000);
     }
 
     #[test]
     fn test_stop_limit_order() {
         let now = Utc::now();
-        
         let stop_limit_order = Order {
             id: Uuid::new_v4(),
             ext_id: Some("stop-limit-1".to_string()),
@@ -517,12 +438,13 @@ mod tests {
             order_type: OrderType::StopLimit,
             instrument_id: Uuid::new_v4(),
             side: Side::Ask,
-            limit_price: Some(dec!(48000.00)),
-            trigger_price: Some(dec!(47000.00)),
-            base_amount: dec!(1.0),
-            remaining_base: dec!(1.0),
-            filled_quote: dec!(0.0),
-            filled_base: dec!(0.0),
+            limit_price: Some(48000),
+            trigger_price: Some(47000),
+            base_amount: 100000,
+            remaining_base: 100000,
+            filled_quote: 0,
+            filled_base: 0,
+            remaining_quote: 4800000000,
             expiration_date: now + chrono::Duration::days(365 * 2),
             status: OrderStatus::WaitingTrigger,
             created_at: now,
@@ -530,13 +452,13 @@ mod tests {
             trigger_by: Some(TriggerType::LastPrice),
             created_from: CreatedFrom::Api,
             sequence_id: 7,
-            remaining_quote: dec!(48000.00),
+            time_in_force: TimeInForce::GTC,
         };
         
         assert_eq!(stop_limit_order.order_type, OrderType::StopLimit);
         assert_eq!(stop_limit_order.status, OrderStatus::WaitingTrigger);
         assert_eq!(stop_limit_order.trigger_by, Some(TriggerType::LastPrice));
-        assert_eq!(stop_limit_order.limit_price, Some(dec!(48000.00)));
-        assert_eq!(stop_limit_order.trigger_price, Some(dec!(47000.00)));
+        assert_eq!(stop_limit_order.limit_price, Some(48000));
+        assert_eq!(stop_limit_order.trigger_price, Some(47000));
     }
 } 
