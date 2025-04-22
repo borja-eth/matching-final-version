@@ -11,8 +11,8 @@ use chrono::Utc;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use uuid::Uuid;
-use crate::types::{Order, Trade, OrderStatus};
-use crate::depth::DepthSnapshot;
+use crate::domain::models::types::{Order, Trade, OrderStatus};
+use crate::domain::services::orderbook::depth::DepthSnapshot;
 
 /// Errors that can occur in the event system
 #[derive(Error, Debug, Clone)]

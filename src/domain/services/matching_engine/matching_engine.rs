@@ -49,10 +49,10 @@ use thiserror::Error;
 use uuid::Uuid;
 use chrono::Utc;
 
-use crate::orderbook::OrderBook;
-use crate::types::{Order, Side, OrderType, OrderStatus, Trade, TimeInForce};
-use crate::depth::DepthTracker;
-use crate::events::{EventBus, MatchingEngineEvent};
+use crate::domain::services::orderbook::orderbook::OrderBook;
+use crate::domain::models::types::{Order, Side, OrderType, OrderStatus, Trade, TimeInForce};
+use crate::domain::services::orderbook::depth::DepthTracker;
+use crate::domain::services::events::{EventBus, MatchingEngineEvent};
 
 /// Errors that can occur during the matching process.
 #[derive(Error, Debug, Clone, PartialEq)]
@@ -597,24 +597,16 @@ impl MatchingEngine {
         }
     }
     
-    /// Gets a depth snapshot from the order book
-    ///
-    /// # Arguments
-    /// * `limit` - The maximum number of price levels to include per side
-    ///
-    /// # Returns
-    /// A snapshot of the current order book depth
-    pub fn get_depth(&mut self, limit: usize) -> crate::depth::DepthSnapshot {
+    /// Gets a snapshot of the current order book depth
+    pub fn get_depth(&mut self, limit: usize) -> crate::domain::services::orderbook::depth::DepthSnapshot {
         let snapshot = self.depth_tracker.get_snapshot(limit);
         
         // Emit depth update event
         if let Some(ref event_bus) = self.event_bus {
-            let depth_event = MatchingEngineEvent::DepthUpdated {
+            let _ = event_bus.publish(MatchingEngineEvent::DepthUpdated {
                 depth: snapshot.clone(),
                 timestamp: Utc::now(),
-            };
-            
-            let _ = event_bus.publish(depth_event);
+            });
         }
         
         snapshot
@@ -624,7 +616,7 @@ impl MatchingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::CreatedFrom;
+    use crate::domain::models::types::CreatedFrom;
     
     // Helper function to create test orders
     fn create_test_order(
@@ -1425,7 +1417,7 @@ mod tests {
     async fn test_event_integration() {
         use tokio::sync::Mutex;
         use std::sync::Arc;
-        use crate::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
+        use crate::domain::services::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
         
         // Create a simple event collector
         struct EventCollector {
@@ -1459,7 +1451,7 @@ mod tests {
         });
         
         // Create the dispatcher and register the collector
-        let dispatcher = crate::events::EventDispatcher::new(event_bus.clone());
+        let dispatcher = crate::domain::services::events::EventDispatcher::new(event_bus.clone());
         dispatcher.register_handler(collector.clone()).await;
         let _handle = dispatcher.start().await;
         
@@ -1509,7 +1501,7 @@ mod tests {
     async fn test_event_trade_execution() {
         use tokio::sync::Mutex;
         use std::sync::Arc;
-        use crate::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
+        use crate::domain::services::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
         
         // Create a simple event collector
         struct EventCollector {
@@ -1543,7 +1535,7 @@ mod tests {
         });
         
         // Create the dispatcher and register the collector
-        let dispatcher = crate::events::EventDispatcher::new(event_bus.clone());
+        let dispatcher = crate::domain::services::events::EventDispatcher::new(event_bus.clone());
         dispatcher.register_handler(collector.clone()).await;
         let _handle = dispatcher.start().await;
         

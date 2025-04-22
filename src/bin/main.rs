@@ -3,32 +3,46 @@
 //--------------------------------------------------------------------------------------------------
 // This is the main entry point for the Ultimate Matching Engine system.
 // It sets up the event system, initializes matching engines for instruments,
-// and optionally starts the API server.
+// and runs the demo if requested.
 //--------------------------------------------------------------------------------------------------
 // To run a demo: cargo run --bin main -- --demo
-// To run the API server: cargo run --bin main -- --api
-// To run both: cargo run --bin main -- --demo --api
-// Advanced: cargo run --bin main -- --demo --api --port 3001
-// cargo run --bin main -- --api --port 8080 --event-dir ./my-events --buffer-size 2000 
-/// This lets you: Set a custom port for the API server
-/// Set a custom directory for event persistence
+// Advanced: cargo run --bin main -- --demo --event-dir ./my-events --buffer-size 2000 
+/// This lets you: Set a custom directory for event persistence
 /// Configure the event buffer size
-use std::net::SocketAddr;
 use std::sync::Arc;
 use structopt::StructOpt;
-use tokio::signal;
 use tracing::{info, Level};
 use uuid::Uuid;
 use std::path::PathBuf;
 use async_trait::async_trait;
 
 use ultimate_matching::{
-    Api,
-    api::AppState,
-    matching_engine::MatchingEngine,
-    events::{EventBus, EventDispatcher, EventLogger, PersistenceEventHandler, EventHandler, MatchingEngineEvent, EventResult},
-    types::{Order, Side, OrderType, OrderStatus, TimeInForce},
+    MatchingEngine,
+    EventBus, EventDispatcher, EventLogger, PersistenceEventHandler, EventHandler, MatchingEngineEvent, EventResult,
+    domain::models::types::{Order, Side, OrderType, OrderStatus, TimeInForce, CreatedFrom},
 };
+
+/// Application state for managing instruments
+struct AppState {
+    event_bus: EventBus,
+    instruments: tokio::sync::RwLock<Vec<Uuid>>,
+}
+
+impl AppState {
+    /// Creates a new AppState with the given event bus
+    fn new(event_bus: EventBus) -> Self {
+        Self {
+            event_bus,
+            instruments: tokio::sync::RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Adds an instrument to the application state
+    async fn add_instrument(&self, instrument_id: Uuid) {
+        let mut instruments = self.instruments.write().await;
+        instruments.push(instrument_id);
+    }
+}
 
 /// Console handler that displays order events in the terminal
 struct OrderConsoleHandler;
@@ -100,14 +114,6 @@ impl EventHandler for OrderConsoleHandler {
 #[derive(StructOpt, Debug)]
 #[structopt(name = "ultimate-matching", about = "Ultimate Matching Engine")]
 struct Opt {
-    /// Whether to start the API server
-    #[structopt(long, help = "Start the API server")]
-    api: bool,
-
-    /// Port to use for the API server
-    #[structopt(long, default_value = "3000", help = "API server port")]
-    port: u16,
-
     /// Directory to store event logs
     #[structopt(long, parse(from_os_str), default_value = "./events", help = "Directory to store event logs")]
     event_dir: PathBuf,
@@ -151,7 +157,7 @@ fn create_test_order(side: Side, price: f64, quantity: f64, instrument_id: Uuid)
         created_at: now,
         updated_at: now,
         trigger_by: None,
-        created_from: ultimate_matching::types::CreatedFrom::Api,
+        created_from: CreatedFrom::Api,
         sequence_id: 1,
         time_in_force: TimeInForce::GTC,
     }
@@ -278,34 +284,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if opt.demo {
         let instrument_id = run_demo(&event_bus).await;
         info!("Demo completed with instrument ID: {}", instrument_id);
-    }
-    
-    // Start the API server if requested
-    if opt.api {
-        // Create the API server
-        let addr = SocketAddr::from(([127, 0, 0, 1], opt.port));
-        let api = Api::new(addr, event_bus);
-        
-        // Start the API server in a separate task
-        info!("Starting API server on http://127.0.0.1:{}", opt.port);
-        tokio::spawn(async move {
-            if let Err(e) = api.serve().await {
-                tracing::error!("API server error: {}", e);
-            }
-        });
-        
-        info!("API server started. Press Ctrl+C to stop.");
-        
-        // Wait for Ctrl+C signal
-        signal::ctrl_c().await?;
-        info!("Shutdown signal received, stopping...");
+        info!("Demo mode completed successfully.");
     } else {
-        // If API is not enabled and demo mode is done, just exit
-        if opt.demo {
-            info!("Demo mode completed. Use --api to start the API server.");
-        } else {
-            info!("No actions specified. Use --demo to run a demo or --api to start the API server.");
-        }
+        info!("No actions specified. Use --demo to run a demo.");
     }
     
     Ok(())

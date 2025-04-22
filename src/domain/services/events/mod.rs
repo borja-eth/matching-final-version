@@ -16,6 +16,7 @@ mod event_types;
 mod event_bus;
 mod dispatcher;
 mod handlers;
+
 #[cfg(test)]
 mod tests;
 

@@ -7,6 +7,7 @@
 //--------------------------------------------------------------------------------------------------
 
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info};
@@ -21,12 +22,34 @@ pub struct EventDispatcher {
     event_bus: EventBus,
     /// Map of event types to handlers
     handlers: Arc<RwLock<HashMap<&'static str, Vec<Arc<dyn EventHandler>>>>>,
-    /// Buffer for event processing
+    /// Buffer size for event processing
     buffer_size: usize,
 }
 
+// Manually implement Debug for EventDispatcher to handle the non-Debug trait objects
+impl fmt::Debug for EventDispatcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventDispatcher")
+            .field("buffer_size", &self.buffer_size)
+            .field("event_bus", &self.event_bus)
+            .field("handlers", &format!("[{} handler types]", 
+                // Just show count of handler types, not the actual handlers
+                // This is async code, so we can't actually access the handlers here
+                // as it would require a blocking read lock
+                "..."
+            ))
+            .finish()
+    }
+}
+
 impl EventDispatcher {
-    /// Creates a new event dispatcher
+    /// Creates a new event dispatcher with default buffer size.
+    ///
+    /// # Arguments
+    /// * `event_bus` - The event bus to subscribe to for events
+    ///
+    /// # Returns
+    /// A new `EventDispatcher` instance
     pub fn new(event_bus: EventBus) -> Self {
         Self {
             event_bus,
@@ -35,7 +58,13 @@ impl EventDispatcher {
         }
     }
     
-    /// Registers a handler for processing events
+    /// Registers a handler for processing specific event types.
+    ///
+    /// # Arguments
+    /// * `handler` - The event handler to register
+    ///
+    /// The handler will only receive events that match the types it declares
+    /// in its `event_types()` method.
     pub async fn register_handler(&self, handler: Arc<dyn EventHandler>) {
         let mut handlers = self.handlers.write().await;
         
@@ -50,7 +79,10 @@ impl EventDispatcher {
         );
     }
     
-    /// Starts the dispatcher to process events
+    /// Starts the dispatcher to process events in the background.
+    ///
+    /// # Returns
+    /// A JoinHandle that can be used to await the dispatcher's completion
     pub async fn start(self) -> tokio::task::JoinHandle<()> {
         let handlers = Arc::clone(&self.handlers);
         let mut receiver = self.event_bus.subscribe();
@@ -102,6 +134,7 @@ impl EventDispatcher {
                 }
             }
             
+            // Log error if receiver task failed, but continue with shutdown
             if let Err(e) = receiver_task.await {
                 error!("Receiver task failed: {}", e);
             }
@@ -110,7 +143,13 @@ impl EventDispatcher {
         })
     }
     
-    /// Sets the buffer size for event processing
+    /// Sets the buffer size for event processing.
+    ///
+    /// # Arguments
+    /// * `buffer_size` - The size of the internal event buffer
+    ///
+    /// # Returns
+    /// Self with updated buffer size for method chaining
     pub fn with_buffer_size(mut self, buffer_size: usize) -> Self {
         self.buffer_size = buffer_size;
         self

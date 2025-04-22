@@ -57,7 +57,7 @@ use std::collections::{BTreeMap, VecDeque, HashMap};
 use uuid::Uuid;
 
 // Import types from types.rs
-use crate::types::{Order, Side};
+use crate::domain::models::types::{Order, Side};
 
 /// Represents a price level in the order book, maintaining a FIFO queue of orders
 /// at the same price point.
@@ -72,6 +72,23 @@ pub struct PriceLevel {
 }
 
 impl PriceLevel {
+    /// Creates a new price level with the given price.
+    ///
+    /// # Arguments
+    /// * `price` - The price for this level
+    /// * `initial_capacity` - Optional capacity for the order queue
+    ///
+    /// # Returns
+    /// A new price level with the given price and an empty order queue
+    pub fn new(price: i64, initial_capacity: Option<usize>) -> Self {
+        let capacity = initial_capacity.unwrap_or(4);
+        Self {
+            price,
+            orders: VecDeque::with_capacity(capacity),
+            total_volume: 0,
+        }
+    }
+
     /// Returns the next order to be matched without removing it from the queue.
     /// This maintains FIFO ordering by always returning the front of the queue.
     ///
@@ -199,12 +216,8 @@ impl OrderBook {
 
         // 3. Reserve capacity in the price level's orders to avoid reallocation
         let price_level = price_levels.entry(price).or_insert_with(|| {
-            let orders = VecDeque::with_capacity(4); // Pre-allocate space for 4 orders at this level
-            PriceLevel {
-                price,
-                orders,
-                total_volume: 0,
-            }
+            // Use the constructor to create a new price level
+            PriceLevel::new(price, Some(4))
         });
 
         // 4. Update price level (no cloning of the entire order)
@@ -249,7 +262,7 @@ impl OrderBook {
             &mut self.asks
         };
 
-        // 3. Get price level and remove order
+        // 3. Get price level
         let price_level = price_levels.get_mut(&price)
             .ok_or(OrderBookError::InvalidPrice(price))?;
 
@@ -536,10 +549,10 @@ mod tests {
     //--------------------------------------------------------------------------------------------------
 
     use super::*;
-    use crate::types::{OrderType, CreatedFrom};
+    use crate::domain::models::types::{OrderType, CreatedFrom};
     use chrono::Utc;
-    use crate::types::OrderStatus;
-    use crate::types::TimeInForce;
+    use crate::domain::models::types::OrderStatus;
+    use crate::domain::models::types::TimeInForce;
 
     /// Creates a test order with the specified parameters.
     fn create_test_order(side: Side, price: i64, quantity: u64, instrument_id: Uuid) -> Order {

@@ -3,8 +3,8 @@ use rust_decimal_macros::dec;
 use uuid::Uuid;
 use chrono::Utc;
 
-use ultimate_matching::types::{Order, Side, OrderType, OrderStatus, TimeInForce, CreatedFrom};
-use ultimate_matching::matching_engine::MatchingEngine;
+use ultimate_matching::domain::models::types::{Order, Side, OrderType, OrderStatus, TimeInForce, CreatedFrom};
+use ultimate_matching::MatchingEngine;
 
 fn create_test_order(
     side: Side,

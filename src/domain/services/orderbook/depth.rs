@@ -39,7 +39,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
-use crate::types::{Order, Side};
+use crate::domain::models::types::{Order, Side};
 
 /// Newtype wrapper for price to provide type safety and semantic meaning
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -401,7 +401,7 @@ impl SharedDepthTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{OrderType, OrderStatus, CreatedFrom, TimeInForce};
+    use crate::domain::models::types::{OrderType, OrderStatus, CreatedFrom, TimeInForce};
     
     // Helper to create test orders
     fn create_test_order(

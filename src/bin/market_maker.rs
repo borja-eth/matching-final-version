@@ -36,7 +36,7 @@ use reqwest::{Client, StatusCode};
 use anyhow::{Result, Context, anyhow};
 use clap::Parser;
 
-use ultimate_matching::types::{Side, OrderType, TimeInForce};
+use ultimate_matching::domain::models::types::{Side, OrderType, TimeInForce};
 
 /// Command line arguments for the market maker
 #[derive(Parser, Debug)]
@@ -758,7 +758,7 @@ mod dto {
     use chrono::{DateTime, Utc};
     use rust_decimal::Decimal;
     use uuid::Uuid;
-    use ultimate_matching::types::{Side, OrderType, OrderStatus, TimeInForce};
+    use ultimate_matching::domain::models::types::{Side, OrderType, OrderStatus, TimeInForce};
 
     /// Request to create a new order
     #[derive(Debug, Clone, Serialize, Deserialize)]

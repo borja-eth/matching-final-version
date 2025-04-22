@@ -1,14 +1,19 @@
 // Expose the modules
-pub mod types;
-pub mod orderbook;
-pub mod matching_engine;
-pub mod depth;
-pub mod events;
-pub mod api;
+pub mod domain;
+// These modules should be accessed through domain::services
+// pub mod events;
+// pub mod orderbook;
+// pub mod matching_engine;
 
 // Re-export key types for easier usage
-pub use types::{Order, Side, OrderType, OrderStatus, Trade, TimeInForce};
-pub use orderbook::OrderBook;
-pub use matching_engine::{MatchingEngine, MatchResult, MatchingError};
-pub use events::{EventBus, MatchingEngineEvent, EventHandler, EventDispatcher};
-pub use api::Api; 
+pub use domain::models::types::{Order, Side, OrderType, OrderStatus, Trade, TimeInForce};
+pub use domain::services::orderbook::orderbook::OrderBook;
+pub use domain::services::orderbook::OrderbookError;
+pub use domain::services::orderbook::depth::{DepthSnapshot, PriceLevel};
+pub use domain::services::matching_engine::matching_engine::{
+    MatchingEngine, MatchResult, MatchingError
+};
+pub use domain::services::events::{
+    EventBus, EventDispatcher, EventHandler, EventError, EventResult, MatchingEngineEvent,
+    PersistenceEventHandler, EventLogger
+}; 

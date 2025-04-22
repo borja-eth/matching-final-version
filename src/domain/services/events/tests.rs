@@ -1,7 +1,7 @@
 #[cfg(test)]
 pub mod tests {
-    use crate::types::{Order, Trade, OrderType, OrderStatus, CreatedFrom, Side, TimeInForce};
-    use crate::events::{
+    use crate::domain::models::types::{Order, Trade, OrderType, OrderStatus, CreatedFrom, Side, TimeInForce};
+    use crate::domain::services::events::{
         EventBus, 
         MatchingEngineEvent, 
         EventDispatcher,

@@ -1,4 +1,4 @@
-mod types;
+mod domain;
 
 use std::sync::Arc;
 use chrono::Utc;
@@ -7,7 +7,8 @@ use tracing_subscriber;
 
 use ultimate_matching::{
     OrderType, Order, Side, OrderStatus, TimeInForce, MatchingEngine,
-    events::{EventBus, EventDispatcher, EventHandler, MatchingEngineEvent, EventResult, PersistenceEventHandler}
+    domain::services::events::{EventBus, EventDispatcher, EventHandler, MatchingEngineEvent, EventResult, PersistenceEventHandler},
+    domain::models::types::CreatedFrom
 };
 
 /// Simple event handler that prints events to the console
@@ -79,7 +80,7 @@ fn create_test_order(side: Side, price: f64, qty: f64, instrument_id: Uuid) -> O
         created_at: now,
         updated_at: now,
         trigger_by: None,
-        created_from: ultimate_matching::types::CreatedFrom::Api,
+        created_from: CreatedFrom::Api,
         sequence_id: 0,
         time_in_force: TimeInForce::GTC,
     }
