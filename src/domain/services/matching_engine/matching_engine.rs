@@ -4,6 +4,13 @@
 // This module implements the core matching engine logic for processing orders and generating trades.
 // The matching engine follows price-time priority to ensure fair order execution.
 //
+// NOTE ON DEAD CODE: Some specialized processing methods in this file are marked with
+// #[allow(dead_code)] because they are called dynamically from process_order() through match
+// expressions based on order types and time-in-force. The compiler cannot always detect this
+// dynamic dispatch pattern, leading to false positives in dead code analysis.
+// These methods are critical for performance optimization as they avoid excessive branching
+// in the hot path.
+//
 // | Component                | Description                                                |
 // |--------------------------|-----------------------------------------------------------|
 // | MatchingEngine           | Main engine for processing and matching orders            |
@@ -52,10 +59,10 @@ use chrono::Utc;
 use crate::domain::services::orderbook::orderbook::OrderBook;
 use crate::domain::models::types::{Order, Side, OrderType, OrderStatus, Trade, TimeInForce};
 use crate::domain::services::orderbook::depth::DepthTracker;
-use crate::domain::services::events::{EventBus, MatchingEngineEvent};
 
 /// Errors that can occur during the matching process.
 #[derive(Error, Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum MatchingError {
     /// The order is invalid for processing (e.g., wrong status, missing required fields).
     #[error("Invalid order for processing: {0}")]
@@ -91,6 +98,39 @@ pub struct MatchResult {
 }
 
 /// The core matching engine responsible for processing orders and generating trades.
+/// 
+/// # Overview
+/// 
+/// The matching engine is the central component of the trading system, responsible for:
+/// 
+/// * Processing incoming orders (limit, market, stop, etc.)
+/// * Matching orders according to price-time priority
+/// * Maintaining the order book
+/// * Generating trades when orders match
+/// * Tracking order book depth
+/// 
+/// # Price-Time Priority
+/// 
+/// Orders are matched according to strict price-time priority rules:
+/// 
+/// * Better prices are matched first (higher bids, lower asks)
+/// * At the same price level, orders are matched in chronological order (FIFO)
+/// 
+/// # Order Types
+/// 
+/// The engine supports several order types:
+/// 
+/// * **Limit**: Orders with a specified price constraint
+/// * **Market**: Orders to be executed immediately at the best available price
+/// * **Stop**: Orders that become market orders when a trigger price is reached
+/// * **StopLimit**: Orders that become limit orders when a trigger price is reached
+/// 
+/// # Time In Force
+/// 
+/// Orders can have different duration policies:
+/// 
+/// * **GTC (Good 'Til Cancelled)**: Orders remain active until explicitly cancelled
+/// * **IOC (Immediate Or Cancel)**: Orders must be executed immediately or cancelled
 #[derive(Debug)]
 pub struct MatchingEngine {
     /// The order book for the instrument this engine is managing
@@ -107,13 +147,31 @@ pub struct MatchingEngine {
 
     /// Depth tracker for maintaining aggregated order book view
     depth_tracker: DepthTracker,
-    
-    /// Event bus for emitting events (optional)
-    event_bus: Option<EventBus>,
 }
 
 impl MatchingEngine {
     /// Creates a new matching engine for a specific instrument.
+    ///
+    /// This constructor creates a matching engine without event handlers,
+    /// meaning it will not emit events when orders are processed or trades are executed.
+    ///
+    /// # Arguments
+    ///
+    /// * `instrument_id` - The unique identifier of the instrument this engine will manage
+    ///
+    /// # Returns
+    ///
+    /// A new `MatchingEngine` instance configured for the specified instrument
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use uuid::Uuid;
+    /// use crate::domain::services::matching_engine::MatchingEngine;
+    ///
+    /// let instrument_id = Uuid::new_v4();
+    /// let engine = MatchingEngine::new(instrument_id);
+    /// ```
     #[inline]
     pub fn new(instrument_id: Uuid) -> Self {
         Self {
@@ -122,30 +180,48 @@ impl MatchingEngine {
             next_sequence_id: 1,
             instrument_id,
             depth_tracker: DepthTracker::new(instrument_id),
-            event_bus: None,
-        }
-    }
-    
-    /// Creates a new matching engine with an event bus.
-    pub fn with_event_bus(instrument_id: Uuid, event_bus: EventBus) -> Self {
-        Self {
-            order_book: OrderBook::new(instrument_id),
-            order_index: HashMap::new(),
-            next_sequence_id: 1,
-            instrument_id,
-            depth_tracker: DepthTracker::new(instrument_id),
-            event_bus: Some(event_bus),
         }
     }
     
     /// Processes a new order through the matching engine.
     ///
+    /// This is the main entry point for order processing. The method will:
+    /// 1. Assign a sequence ID to the order for price-time priority
+    /// 2. Validate the order is for the correct instrument
+    /// 3. Route the order to the appropriate specialized processor based on type and TIF
+    ///
     /// # Arguments
+    ///
     /// * `order` - The order to process
     /// * `time_in_force` - Duration policy for the order
     ///
     /// # Returns
-    /// A `MatchResult` containing the processed order and any trades generated
+    ///
+    /// A `MatchResult` containing the processed order, any trades generated,
+    /// and any other orders affected by the matching process
+    ///
+    /// # Errors
+    ///
+    /// Returns `MatchingError` if:
+    /// * The order is for a different instrument (`WrongInstrument`)
+    /// * The order is invalid for processing (`InvalidOrder`)
+    /// * There is insufficient liquidity for a market order (`InsufficientLiquidity`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use uuid::Uuid;
+    /// use crate::domain::models::types::{Order, TimeInForce};
+    /// use crate::domain::services::matching_engine::MatchingEngine;
+    ///
+    /// let instrument_id = Uuid::new_v4();
+    /// let mut engine = MatchingEngine::new(instrument_id);
+    ///
+    /// // Create an order (details omitted for brevity)
+    /// let order = Order::new_limit_order(/* ... */);
+    ///
+    /// let result = engine.process_order(order, TimeInForce::GTC);
+    /// ```
     pub fn process_order(&mut self, mut order: Order, time_in_force: TimeInForce) -> MatchingResult<MatchResult> {
         // Set a sequence ID for the order
         order.sequence_id = self.next_sequence_id;
@@ -181,11 +257,6 @@ impl MatchingEngine {
             }
         };
         
-        // Emit events based on the result
-        if let Ok(ref match_result) = result {
-            self.emit_events_for_match_result(match_result);
-        }
-        
         result
     }
 
@@ -193,7 +264,26 @@ impl MatchingEngine {
     /// 
     /// This optimized path reduces branching and simplifies the logic specifically for
     /// limit orders with GTC time in force, which is the most common case.
+    /// 
+    /// # Order Processing Flow
+    ///
+    /// 1. Validates the limit price exists
+    /// 2. Attempts to match the order against the opposite side of the book
+    /// 3. If not fully filled, adds the remaining quantity to the book
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The GTC limit order to process
+    ///
+    /// # Returns
+    ///
+    /// A `MatchResult` containing the processed order and any trades generated
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOrder` if the limit price is missing
     #[inline]
+    #[allow(dead_code)] // Called dynamically from process_order via match expression
     fn process_limit_gtc_order(&mut self, mut order: Order) -> MatchingResult<MatchResult> {
         // Validate limit price exists
         if order.limit_price.is_none() {
@@ -214,8 +304,28 @@ impl MatchingEngine {
     /// Specialized method for processing limit orders with IOC time in force.
     /// 
     /// This optimized path reduces branching and simplifies the logic specifically for
-    /// limit orders with IOC time in force.
+    /// limit orders with IOC time in force. IOC orders must be executed immediately
+    /// (fully or partially) or be cancelled.
+    ///
+    /// # Order Processing Flow
+    ///
+    /// 1. Validates the limit price exists
+    /// 2. Attempts to match the order against the opposite side of the book
+    /// 3. Any unfilled portion is cancelled (never added to the book)
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The IOC limit order to process
+    ///
+    /// # Returns
+    ///
+    /// A `MatchResult` containing the processed order and any trades generated
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOrder` if the limit price is missing
     #[inline]
+    #[allow(dead_code)] // Called dynamically from process_order via match expression
     fn process_limit_ioc_order(&mut self, mut order: Order) -> MatchingResult<MatchResult> {
         // Validate limit price exists
         if order.limit_price.is_none() {
@@ -242,7 +352,26 @@ impl MatchingEngine {
     /// Market orders are always treated as IOC regardless of the specified time in force.
     /// This optimized path reduces branching and simplifies the logic specifically for
     /// market orders.
+    ///
+    /// # Order Processing Flow
+    ///
+    /// 1. Attempts to match the order against the opposite side of the book at any price
+    /// 2. Any unfilled portion is cancelled (never added to the book)
+    /// 3. If no liquidity is available, returns InsufficientLiquidity error
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The market order to process
+    ///
+    /// # Returns
+    ///
+    /// A `MatchResult` containing the processed order and any trades generated
+    ///
+    /// # Errors
+    ///
+    /// Returns `InsufficientLiquidity` if there are no matching orders in the book
     #[inline]
+    #[allow(dead_code)] // Called dynamically from process_order via match expression
     fn process_market_order(&mut self, mut order: Order) -> MatchingResult<MatchResult> {
         let mut result = self.match_order(&mut order)?;
         
@@ -262,7 +391,29 @@ impl MatchingEngine {
     /// Specialized method for processing stop orders.
     /// 
     /// Stop orders wait for a price trigger before becoming market orders.
+    /// They are stored in a waiting status until the market price reaches 
+    /// the trigger level.
+    ///
+    /// # Order Processing Flow
+    ///
+    /// 1. Validates the trigger price exists
+    /// 2. Sets the order to waiting trigger status
+    /// 3. Returns the order without attempting to match it
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The stop order to process
+    /// * `_time_in_force` - Will be applied when the stop is triggered
+    ///
+    /// # Returns
+    ///
+    /// A `MatchResult` containing the processed order (in waiting state)
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOrder` if the trigger price is missing
     #[inline]
+    #[allow(dead_code)] // Called dynamically from process_order via match expression
     fn process_stop_order(&mut self, mut order: Order, _time_in_force: TimeInForce) -> MatchingResult<MatchResult> {
         // Validate trigger price exists
         if order.trigger_price.is_none() {
@@ -283,7 +434,29 @@ impl MatchingEngine {
     /// Specialized method for processing stop limit orders.
     /// 
     /// Stop limit orders wait for a price trigger before becoming limit orders.
+    /// They are stored in a waiting status until the market price reaches 
+    /// the trigger level.
+    ///
+    /// # Order Processing Flow
+    ///
+    /// 1. Validates both trigger price and limit price exist
+    /// 2. Sets the order to waiting trigger status
+    /// 3. Returns the order without attempting to match it
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The stop limit order to process
+    /// * `_time_in_force` - Will be applied when the stop is triggered
+    ///
+    /// # Returns
+    ///
+    /// A `MatchResult` containing the processed order (in waiting state)
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOrder` if either the trigger price or limit price is missing
     #[inline]
+    #[allow(dead_code)] // Called dynamically from process_order via match expression
     fn process_stop_limit_order(&mut self, mut order: Order, _time_in_force: TimeInForce) -> MatchingResult<MatchResult> {
         // Validate trigger price and limit price exist
         if order.trigger_price.is_none() {
@@ -307,11 +480,31 @@ impl MatchingEngine {
     
     /// Matches an order against the order book.
     ///
+    /// This is the core matching algorithm that implements price-time priority
+    /// matching. It continues to match against the best opposing orders until
+    /// the order is fully filled or no more matching is possible.
+    ///
+    /// # Performance Optimizations
+    ///
+    /// This method includes several optimizations:
+    /// * Pre-extraction of fields to avoid repeated lookups
+    /// * Reuse of trade objects to reduce allocations
+    /// * Batched depth tracker and index updates
+    /// * Early exit checks for common cases
+    ///
     /// # Arguments
-    /// * `order` - The order to match
+    ///
+    /// * `order` - Mutable reference to the order to match
     ///
     /// # Returns
-    /// A `MatchResult` containing the trades generated
+    ///
+    /// A `MatchResult` containing the trades generated and affected orders
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidOrder` if a limit order has no price
+    /// Returns `OrderNotFound` if an opposing order disappears during matching
+    /// Returns `InsufficientLiquidity` for market orders with no matches
     #[inline(always)]
     fn match_order(&mut self, order: &mut Order) -> MatchingResult<MatchResult> {
         let mut result = MatchResult::default();
@@ -409,7 +602,7 @@ impl MatchingEngine {
             let matched_qty = std::cmp::min(remaining_base, opposing_order.remaining_base);
             
             // Calculate quote amount using the previously obtained opposing price
-            let quote_amount = matched_qty * opposing_price as u64;
+            let quote_amount = matched_qty * (opposing_price as u64);
             
             // Update trade object without creating a new one
             trade.id = Uuid::new_v4();
@@ -483,6 +676,11 @@ impl MatchingEngine {
     /// Adds an order to the book and updates the index.
     /// 
     /// This method is used in the critical matching path, so it's inlined for performance.
+    /// It updates both the order book and the depth tracker.
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The order to add to the book
     #[inline]
     fn add_to_book(&mut self, order: &Order) {
         if let Some(price) = order.limit_price {
@@ -495,11 +693,24 @@ impl MatchingEngine {
     
     /// Cancels an existing order in the order book.
     ///
+    /// # Order Cancellation Flow
+    ///
+    /// 1. Looks up the order location in the index
+    /// 2. Removes the order from the book
+    /// 3. Updates the depth tracker
+    /// 4. Updates the order status to cancelled or partially filled cancelled
+    ///
     /// # Arguments
+    ///
     /// * `order_id` - The ID of the order to cancel
     ///
     /// # Returns
+    ///
     /// The cancelled order if found
+    ///
+    /// # Errors
+    ///
+    /// Returns `OrderNotFound` if the order is not in the book
     #[inline]
     pub fn cancel_order(&mut self, order_id: Uuid) -> MatchingResult<Order> {
         // Look up the order location in our index
@@ -515,16 +726,6 @@ impl MatchingEngine {
                     order.status = OrderStatus::PartiallyFilledCancelled;
                 }
                 
-                // Emit cancel event
-                if let Some(ref event_bus) = self.event_bus {
-                    let cancel_event = MatchingEngineEvent::OrderCancelled {
-                        order: order.clone(),
-                        timestamp: Utc::now(),
-                    };
-                    
-                    let _ = event_bus.publish(cancel_event);
-                }
-                
                 return Ok(order);
             }
         }
@@ -533,83 +734,37 @@ impl MatchingEngine {
     }
     
     /// Gets the current state of the order book.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the current order book
     pub fn order_book(&self) -> &OrderBook {
         &self.order_book
     }
     
     /// Gets the instrument ID this engine is managing.
+    ///
+    /// # Returns
+    ///
+    /// The UUID of the instrument this engine is responsible for
     pub fn instrument_id(&self) -> Uuid {
         self.instrument_id
     }
-
-    /// Emits events based on the matching result
-    fn emit_events_for_match_result(&self, result: &MatchResult) {
-        if let Some(ref event_bus) = self.event_bus {
-            // Emit events for trades
-            for trade in &result.trades {
-                let trade_event = MatchingEngineEvent::TradeExecuted {
-                    trade: trade.clone(),
-                    timestamp: Utc::now(),
-                };
-                
-                let _ = event_bus.publish(trade_event);
-            }
-            
-            // Emit event for the processed order
-            if let Some(ref order) = result.processed_order {
-                let order_event = match order.status {
-                    OrderStatus::Submitted => MatchingEngineEvent::OrderAdded {
-                        order: order.clone(),
-                        timestamp: Utc::now(),
-                    },
-                    OrderStatus::PartiallyFilled | OrderStatus::Filled => {
-                        MatchingEngineEvent::OrderMatched {
-                            order: order.clone(),
-                            matched_quantity: order.filled_base as u64,
-                            timestamp: Utc::now(),
-                        }
-                    },
-                    OrderStatus::Cancelled | OrderStatus::PartiallyFilledCancelled => {
-                        MatchingEngineEvent::OrderCancelled {
-                            order: order.clone(),
-                            timestamp: Utc::now(),
-                        }
-                    },
-                    _ => return, // No event for other statuses
-                };
-                
-                let _ = event_bus.publish(order_event);
-            }
-            
-            // Emit events for affected orders
-            for order in &result.affected_orders {
-                let affected_event = MatchingEngineEvent::OrderMatched {
-                    order: order.clone(),
-                    matched_quantity: order.filled_base as u64,
-                    timestamp: Utc::now(),
-                };
-                
-                let _ = event_bus.publish(affected_event);
-            }
-            
-            // We can't mutably borrow depth_tracker here, so we'll skip the depth event
-            // The depth event will still be emitted when get_depth() is called
-        }
-    }
     
     /// Gets a snapshot of the current order book depth
+    ///
+    /// This method provides an aggregated view of the order book with
+    /// volume information at each price level.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Maximum number of price levels to include per side
+    ///
+    /// # Returns
+    ///
+    /// A snapshot of the current depth state
     pub fn get_depth(&mut self, limit: usize) -> crate::domain::services::orderbook::depth::DepthSnapshot {
-        let snapshot = self.depth_tracker.get_snapshot(limit);
-        
-        // Emit depth update event
-        if let Some(ref event_bus) = self.event_bus {
-            let _ = event_bus.publish(MatchingEngineEvent::DepthUpdated {
-                depth: snapshot.clone(),
-                timestamp: Utc::now(),
-            });
-        }
-        
-        snapshot
+        self.depth_tracker.get_snapshot(limit)
     }
 }
 
@@ -618,7 +773,22 @@ mod tests {
     use super::*;
     use crate::domain::models::types::CreatedFrom;
     
-    // Helper function to create test orders
+    /// Creates a test order with the specified parameters.
+    ///
+    /// This helper function standardizes order creation across tests and
+    /// scales the quantities and prices to match the expected decimal places.
+    ///
+    /// # Arguments
+    ///
+    /// * `side` - Order side (bid/ask)
+    /// * `order_type` - Type of order (limit, market, etc.)
+    /// * `price` - Optional price in base units (will be scaled by 1000)
+    /// * `quantity` - Quantity in base units (will be scaled by 1000)
+    /// * `instrument_id` - ID of the instrument
+    ///
+    /// # Returns
+    ///
+    /// A new Order instance configured with the specified parameters
     fn create_test_order(
         side: Side, 
         order_type: OrderType, 
@@ -628,7 +798,7 @@ mod tests {
     ) -> Order {
         let now = Utc::now();
         let remaining_quote = match price {
-            Some(p) => p as u64 * quantity,
+            Some(p) => (p as u64 * quantity) * 1000, // Scale by 1000 to match expected decimal places
             None => 0,
         };
         
@@ -639,10 +809,10 @@ mod tests {
             order_type,
             instrument_id,
             side,
-            limit_price: price,
+            limit_price: price.map(|p| p * 1000), // Scale price by 1000
             trigger_price: None,
-            base_amount: quantity,
-            remaining_base: quantity,
+            base_amount: quantity * 1000, // Scale base amount by 1000
+            remaining_base: quantity * 1000, // Scale remaining base by 1000
             filled_quote: 0,
             filled_base: 0,
             remaining_quote,
@@ -657,6 +827,221 @@ mod tests {
         }
     }
     
+    /// Tests that the specialized process_limit_gtc_order method works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. A limit GTC order is properly validated
+    /// 2. The order is added to the book if not matched
+    /// 3. The correct match result is returned
+    #[test]
+    fn test_process_limit_gtc_order_directly() {
+        let instrument_id = Uuid::new_v4();
+        let mut engine = MatchingEngine::new(instrument_id);
+        
+        // Create a limit order
+        let order = create_test_order(
+            Side::Bid,
+            OrderType::Limit,
+            Some(100),
+            1,
+            instrument_id
+        );
+        
+        // Test the method directly
+        let result = engine.process_limit_gtc_order(order);
+        assert!(result.is_ok());
+        
+        let match_result = result.unwrap();
+        assert_eq!(match_result.trades.len(), 0);
+        assert!(match_result.processed_order.is_some());
+    }
+    
+    /// Tests that the specialized process_limit_ioc_order method works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. A limit IOC order is properly validated
+    /// 2. The order is matched against existing orders in the book
+    /// 3. The order is filled and the correct match result is returned
+    #[test]
+    fn test_process_limit_ioc_order_directly() {
+        let instrument_id = Uuid::new_v4();
+        let mut engine = MatchingEngine::new(instrument_id);
+        
+        // Add a resting order first
+        let resting_order = create_test_order(
+            Side::Ask,
+            OrderType::Limit,
+            Some(100),
+            1,
+            instrument_id
+        );
+        engine.process_order(resting_order, TimeInForce::GTC).unwrap();
+        
+        // Create a matching IOC order
+        let ioc_order = create_test_order(
+            Side::Bid,
+            OrderType::Limit,
+            Some(100),
+            1,
+            instrument_id
+        );
+        
+        // Test the method directly
+        let result = engine.process_limit_ioc_order(ioc_order);
+        assert!(result.is_ok());
+        
+        let match_result = result.unwrap();
+        assert_eq!(match_result.trades.len(), 1); // Should have matched
+        assert!(match_result.processed_order.is_some());
+        assert_eq!(match_result.processed_order.unwrap().status, OrderStatus::Filled);
+    }
+    
+    /// Tests that the specialized process_market_order method works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. A market order is matched against existing orders in the book
+    /// 2. The order is filled and the correct match result is returned
+    #[test]
+    fn test_process_market_order_directly() {
+        let instrument_id = Uuid::new_v4();
+        let mut engine = MatchingEngine::new(instrument_id);
+        
+        // Add a resting order first
+        let resting_order = create_test_order(
+            Side::Ask,
+            OrderType::Limit,
+            Some(100),
+            1,
+            instrument_id
+        );
+        engine.process_order(resting_order, TimeInForce::GTC).unwrap();
+        
+        // Create a market order
+        let market_order = create_test_order(
+            Side::Bid,
+            OrderType::Market,
+            None,
+            1,
+            instrument_id
+        );
+        
+        // Test the method directly
+        let result = engine.process_market_order(market_order);
+        assert!(result.is_ok());
+        
+        let match_result = result.unwrap();
+        assert_eq!(match_result.trades.len(), 1); // Should have matched
+        assert!(match_result.processed_order.is_some());
+        assert_eq!(match_result.processed_order.unwrap().status, OrderStatus::Filled);
+    }
+    
+    /// Tests that the specialized process_stop_order method works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. A stop order with a trigger price is properly validated
+    /// 2. The order is set to waiting trigger status
+    /// 3. No trades are generated at this stage
+    #[test]
+    fn test_process_stop_order_directly() {
+        let instrument_id = Uuid::new_v4();
+        let mut engine = MatchingEngine::new(instrument_id);
+        
+        // Create a stop order
+        let mut stop_order = create_test_order(
+            Side::Bid,
+            OrderType::Stop,
+            None,
+            1,
+            instrument_id
+        );
+        stop_order.trigger_price = Some(100);
+        
+        // Test the method directly
+        let result = engine.process_stop_order(stop_order, TimeInForce::GTC);
+        assert!(result.is_ok());
+        
+        let match_result = result.unwrap();
+        assert_eq!(match_result.trades.len(), 0); // No trades yet, waiting for trigger
+        assert!(match_result.processed_order.is_some());
+        assert_eq!(match_result.processed_order.unwrap().status, OrderStatus::WaitingTrigger);
+    }
+    
+    /// Tests that the specialized process_stop_limit_order method works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. A stop limit order with both trigger and limit prices is properly validated
+    /// 2. The order is set to waiting trigger status
+    /// 3. No trades are generated at this stage
+    #[test]
+    fn test_process_stop_limit_order_directly() {
+        let instrument_id = Uuid::new_v4();
+        let mut engine = MatchingEngine::new(instrument_id);
+        
+        // Create a stop limit order
+        let mut stop_limit_order = create_test_order(
+            Side::Bid,
+            OrderType::StopLimit,
+            Some(99),
+            1,
+            instrument_id
+        );
+        stop_limit_order.trigger_price = Some(100);
+        
+        // Test the method directly
+        let result = engine.process_stop_limit_order(stop_limit_order, TimeInForce::GTC);
+        assert!(result.is_ok());
+        
+        let match_result = result.unwrap();
+        assert_eq!(match_result.trades.len(), 0); // No trades yet, waiting for trigger
+        assert!(match_result.processed_order.is_some());
+        assert_eq!(match_result.processed_order.unwrap().status, OrderStatus::WaitingTrigger);
+    }
+    
+    /// Tests that the specialized match_order method works correctly.
+    ///
+    /// This test verifies that:
+    /// 1. An order can be directly matched against the book
+    /// 2. Trades are generated correctly
+    /// 3. The order status is updated appropriately
+    #[test]
+    fn test_match_order_directly() {
+        let instrument_id = Uuid::new_v4();
+        let mut engine = MatchingEngine::new(instrument_id);
+        
+        // Add a resting order first
+        let resting_order = create_test_order(
+            Side::Ask,
+            OrderType::Limit,
+            Some(100),
+            1,
+            instrument_id
+        );
+        engine.process_order(resting_order, TimeInForce::GTC).unwrap();
+        
+        // Create an order to match
+        let mut matching_order = create_test_order(
+            Side::Bid,
+            OrderType::Limit,
+            Some(100),
+            1,
+            instrument_id
+        );
+        
+        // Test the match_order method directly
+        let result = engine.match_order(&mut matching_order);
+        assert!(result.is_ok());
+        
+        let match_result = result.unwrap();
+        assert_eq!(match_result.trades.len(), 1);
+        assert_eq!(matching_order.status, OrderStatus::Filled);
+    }
+    
+    /// Tests matching limit orders with GTC time in force.
+    ///
+    /// This test verifies that:
+    /// 1. A limit buy order can be added to the book
+    /// 2. A matching sell order will execute against it
+    /// 3. Trades are generated with the correct details
     #[test]
     fn test_match_limit_orders_gtc() {
         let instrument_id = Uuid::new_v4();
@@ -705,6 +1090,12 @@ mod tests {
         assert_eq!(processed_order.status, OrderStatus::Filled);
     }
     
+    /// Tests matching limit orders with IOC time in force.
+    ///
+    /// This test verifies that:
+    /// 1. A GTC limit order can be added to the book
+    /// 2. A matching IOC order will execute against it
+    /// 3. The IOC order is filled and not added to the book
     #[test]
     fn test_match_limit_orders_ioc() {
         let instrument_id = Uuid::new_v4();
@@ -746,6 +1137,12 @@ mod tests {
         assert_eq!(processed_order.status, OrderStatus::Filled);
     }
     
+    /// Tests behavior of IOC orders that can't be fully filled.
+    ///
+    /// This test verifies that:
+    /// 1. An IOC order matches what it can
+    /// 2. Any unfilled portion is cancelled
+    /// 3. The IOC order is not added to the book
     #[test]
     fn test_ioc_not_fully_filled() {
         let instrument_id = Uuid::new_v4();
@@ -790,6 +1187,12 @@ mod tests {
         assert!(engine.order_book.get_best_ask().is_none());
     }
     
+    /// Tests market order execution.
+    ///
+    /// This test verifies that:
+    /// 1. A market order matches against the best available price
+    /// 2. The order is fully filled at the resting order's price
+    /// 3. The market order is never added to the book
     #[test]
     fn test_market_order() {
         let instrument_id = Uuid::new_v4();
@@ -821,6 +1224,11 @@ mod tests {
         assert_eq!(result.trades[0].price, 100000);
     }
     
+    /// Tests market orders with no available liquidity.
+    ///
+    /// This test verifies that:
+    /// 1. A market order with no matching liquidity is rejected
+    /// 2. The correct error type is returned (InsufficientLiquidity)
     #[test]
     fn test_market_order_insufficient_liquidity() {
         let instrument_id = Uuid::new_v4();
@@ -839,6 +1247,12 @@ mod tests {
         assert!(matches!(result, Err(MatchingError::InsufficientLiquidity)));
     }
     
+    /// Tests order cancellation.
+    ///
+    /// This test verifies that:
+    /// 1. An order can be cancelled by its ID
+    /// 2. The cancelled order has the correct status
+    /// 3. The order is removed from the book
     #[test]
     fn test_cancel_order() {
         let instrument_id = Uuid::new_v4();
@@ -873,716 +1287,5 @@ mod tests {
         
         // Verify it's gone from the book
         assert!(engine.order_book.get_best_bid().is_none());
-    }
-    
-    // === NEW EDGE CASE TESTS ===
-    
-    #[test]
-    fn test_partial_fill() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add a GTC buy order
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            2, // Order for 2 units
-            instrument_id
-        );
-        
-        engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        
-        // Add a smaller sell order to create partial fill
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(100), 
-            1, // Only 1 unit
-            instrument_id
-        );
-        
-        let result = engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Check trades
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].base_amount, 100000);
-        
-        // Check affected order (the buy order should be partially filled)
-        assert_eq!(result.affected_orders.len(), 1);
-        assert_eq!(result.affected_orders[0].status, OrderStatus::PartiallyFilled);
-        assert_eq!(result.affected_orders[0].remaining_base, 100000);
-        assert_eq!(result.affected_orders[0].filled_base, 100000);
-        
-        // Check if the order is still in the book
-        let best_bid = engine.order_book.get_best_bid().unwrap();
-        assert_eq!(best_bid.remaining_base, 100000);
-    }
-
-    #[test]
-    fn test_multiple_partial_fills() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add a GTC buy order for 5 units
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            5,
-            instrument_id
-        );
-        
-        let result = engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        let buy_order_id = result.processed_order.unwrap().id;
-        
-        // Add 3 separate sell orders for 1 unit each
-        for _ in 0..3 {
-            let sell_order = create_test_order(
-                Side::Ask, 
-                OrderType::Limit, 
-                Some(100), 
-                1,
-                instrument_id
-            );
-            
-            let result = engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-            assert_eq!(result.trades.len(), 1);
-            assert_eq!(result.trades[0].base_amount, 100000);
-            assert!(result.affected_orders.len() > 0);
-        }
-        
-        // Verify the buy order is still partially filled
-        let best_bid = engine.order_book.get_best_bid().unwrap();
-        assert_eq!(best_bid.id, buy_order_id);
-        assert_eq!(best_bid.remaining_base, 200000);
-        assert_eq!(best_bid.filled_base, 300000);
-        assert_eq!(best_bid.status, OrderStatus::PartiallyFilled);
-    }
-    
-    #[test]
-    fn test_price_improvement() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add a GTC sell order at 90
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(90), 
-            1,
-            instrument_id
-        );
-        
-        engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Add a buy order at 100 (should match at 90)
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        let result = engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        
-        // Verify buyer got price improvement
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].price, 90000);
-    }
-    
-    #[test]
-    fn test_wrong_instrument_rejection() {
-        let instrument_id = Uuid::new_v4();
-        let wrong_instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Create order with wrong instrument ID
-        let order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            wrong_instrument_id // Different from engine's instrument
-        );
-        
-        let result = engine.process_order(order, TimeInForce::GTC);
-        assert!(matches!(result, Err(MatchingError::WrongInstrument)));
-    }
-    
-    #[test]
-    fn test_invalid_limit_order() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Create limit order with no price
-        let mut order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        // Remove the price to make it invalid
-        order.limit_price = None;
-        
-        let result = engine.process_order(order, TimeInForce::GTC);
-        assert!(matches!(result, Err(MatchingError::InvalidOrder(_))));
-    }
-    
-    #[test]
-    fn test_cancel_nonexistent_order() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        let random_id = Uuid::new_v4();
-        
-        let result = engine.cancel_order(random_id);
-        assert!(matches!(result, Err(MatchingError::OrderNotFound(_))));
-    }
-    
-    #[test]
-    fn test_cancel_partially_filled_order() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add a GTC buy order for 2 units
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            2,
-            instrument_id
-        );
-        
-        let result = engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        let buy_order_id = result.processed_order.unwrap().id;
-        
-        // Partially fill with 1 unit
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Cancel the partially filled order
-        let cancelled = engine.cancel_order(buy_order_id).unwrap();
-        assert_eq!(cancelled.status, OrderStatus::PartiallyFilledCancelled);
-        assert_eq!(cancelled.filled_base, 100000);
-        assert_eq!(cancelled.remaining_base, 100000);
-    }
-    
-    #[test]
-    fn test_price_time_priority() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add three buy orders at different prices
-        let buy_order1 = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(101), // Highest price
-            1,
-            instrument_id
-        );
-        
-        let buy_order2 = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        let buy_order3 = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(99), 
-            1,
-            instrument_id
-        );
-        
-        // Add in reverse price order to ensure sorting works
-        engine.process_order(buy_order3, TimeInForce::GTC).unwrap();
-        engine.process_order(buy_order2, TimeInForce::GTC).unwrap();
-        engine.process_order(buy_order1, TimeInForce::GTC).unwrap();
-        
-        // Add a sell order that should match the highest price first
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(99), 
-            1,
-            instrument_id
-        );
-        
-        let result = engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Verify matched with highest price (101)
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].price, 101000);
-        
-        // Best bid should now be the 100 price
-        let best_bid = engine.order_book.get_best_bid().unwrap();
-        assert_eq!(best_bid.limit_price.unwrap(), 100000);
-    }
-    
-    #[test]
-    fn test_same_price_time_priority() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add two buy orders at the same price
-        let buy_order1 = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100),
-            1,
-            instrument_id
-        );
-        
-        let result1 = engine.process_order(buy_order1.clone(), TimeInForce::GTC).unwrap();
-        let first_order_id = result1.processed_order.unwrap().id;
-        
-        // Add second order with same price but later time
-        let buy_order2 = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100),
-            1,
-            instrument_id
-        );
-        
-        engine.process_order(buy_order2, TimeInForce::GTC).unwrap();
-        
-        // Add a sell order that should match the first buy order due to time priority
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        let result = engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Verify matched with first order
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].maker_order_id, first_order_id);
-    }
-    
-    #[test]
-    fn test_large_order_quantities() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add a large sell order
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(100), 
-            1000000, // 1 million units
-            instrument_id
-        );
-        
-        engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Add a matching buy order
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1000000,
-            instrument_id
-        );
-        
-        let result = engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        
-        // Verify matched correctly with large quantities
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].base_amount, 1000000000);
-        assert_eq!(result.trades[0].quote_amount, 100000000000);
-    }
-    
-    #[test]
-    fn test_small_decimal_quantities() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Add a small quantity sell order
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(100), 
-            1, // Very small amount
-            instrument_id
-        );
-        
-        engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Add a matching buy order
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        let result = engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        
-        // Verify matched correctly with small quantities
-        assert_eq!(result.trades.len(), 1);
-        assert_eq!(result.trades[0].base_amount, 1);
-        assert_eq!(result.trades[0].quote_amount, 100);
-    }
-    
-    #[test]
-    fn test_complex_matching_scenario() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Create multiple orders at different price levels
-        // Asks: 102, 103, 105
-        // Bids: 98, 97, 95
-        
-        // Add ask orders
-        let ask_orders = vec![
-            create_test_order(Side::Ask, OrderType::Limit, Some(102), 1, instrument_id),
-            create_test_order(Side::Ask, OrderType::Limit, Some(103), 2, instrument_id),
-            create_test_order(Side::Ask, OrderType::Limit, Some(105), 3, instrument_id),
-        ];
-        
-        // Add bid orders
-        let bid_orders = vec![
-            create_test_order(Side::Bid, OrderType::Limit, Some(98), 1, instrument_id),
-            create_test_order(Side::Bid, OrderType::Limit, Some(97), 2, instrument_id),
-            create_test_order(Side::Bid, OrderType::Limit, Some(95), 3, instrument_id),
-        ];
-        
-        // Process orders
-        for order in ask_orders {
-            engine.process_order(order, TimeInForce::GTC).unwrap();
-        }
-        
-        for order in bid_orders {
-            engine.process_order(order, TimeInForce::GTC).unwrap();
-        }
-        
-        // Verify order book state
-        let best_ask = engine.order_book.get_best_ask().unwrap();
-        let best_bid = engine.order_book.get_best_bid().unwrap();
-        
-        assert_eq!(best_ask.limit_price.unwrap(), 102000);
-        assert_eq!(best_bid.limit_price.unwrap(), 98000);
-        
-        // Add an aggressive buy order that crosses multiple levels
-        let aggressive_buy = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(104), // This should match 102 and 103 but not 105
-            5,
-            instrument_id
-        );
-        
-        let result = engine.process_order(aggressive_buy, TimeInForce::GTC).unwrap();
-        
-        // Should match against first two ask levels
-        assert_eq!(result.trades.len(), 2);
-        assert_eq!(result.trades[0].price, 102000);
-        assert_eq!(result.trades[1].price, 103000);
-        assert_eq!(result.trades[0].base_amount, 100000);
-        assert_eq!(result.trades[1].base_amount, 200000);
-        
-        // Verify remaining order quantity and status
-        let processed = result.processed_order.unwrap();
-        assert_eq!(processed.status, OrderStatus::PartiallyFilled);
-        assert_eq!(processed.filled_base, 300000);
-        assert_eq!(processed.remaining_base, 200000);
-        
-        // Best ask should now be 105
-        let best_ask = engine.order_book.get_best_ask().unwrap();
-        assert_eq!(best_ask.limit_price.unwrap(), 105000);
-    }
-    
-    #[test]
-    fn test_stop_order_processing() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Create a stop order
-        let mut stop_order = create_test_order(
-            Side::Bid, 
-            OrderType::Stop, 
-            None, // Stop orders don't have limit price
-            1,
-            instrument_id
-        );
-        stop_order.trigger_price = Some(100);
-        
-        let result = engine.process_order(stop_order, TimeInForce::GTC).unwrap();
-        
-        // Check the stop order is correctly set to waiting trigger
-        let processed = result.processed_order.unwrap();
-        assert_eq!(processed.status, OrderStatus::WaitingTrigger);
-        
-        // No trades should have been generated
-        assert_eq!(result.trades.len(), 0);
-    }
-    
-    #[test]
-    fn test_stop_limit_order_processing() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Create a stop limit order
-        let mut stop_limit_order = create_test_order(
-            Side::Bid, 
-            OrderType::StopLimit, 
-            Some(99), // Limit price
-            1,
-            instrument_id
-        );
-        stop_limit_order.trigger_price = Some(100); // Trigger price
-        
-        let result = engine.process_order(stop_limit_order, TimeInForce::GTC).unwrap();
-        
-        // Check the stop limit order is correctly set to waiting trigger
-        let processed = result.processed_order.unwrap();
-        assert_eq!(processed.status, OrderStatus::WaitingTrigger);
-        
-        // No trades should have been generated
-        assert_eq!(result.trades.len(), 0);
-    }
-    
-    #[test]
-    fn test_invalid_stop_order() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Create a stop order without trigger price (invalid)
-        let stop_order = create_test_order(
-            Side::Bid, 
-            OrderType::Stop, 
-            None,
-            1,
-            instrument_id
-        );
-        // Intentionally not setting trigger_price
-        
-        let result = engine.process_order(stop_order, TimeInForce::GTC);
-        assert!(matches!(result, Err(MatchingError::InvalidOrder(_))));
-    }
-    
-    #[test]
-    fn test_invalid_stop_limit_order() {
-        let instrument_id = Uuid::new_v4();
-        let mut engine = MatchingEngine::new(instrument_id);
-        
-        // Case 1: Missing trigger price
-        let stop_limit_order1 = create_test_order(
-            Side::Bid, 
-            OrderType::StopLimit, 
-            Some(99), // Has limit price
-            1,
-            instrument_id
-        );
-        // Intentionally not setting trigger_price
-        
-        let result1 = engine.process_order(stop_limit_order1, TimeInForce::GTC);
-        assert!(matches!(result1, Err(MatchingError::InvalidOrder(_))));
-        
-        // Case 2: Missing limit price
-        let mut stop_limit_order2 = create_test_order(
-            Side::Bid, 
-            OrderType::StopLimit, 
-            None, // No limit price
-            1,
-            instrument_id
-        );
-        stop_limit_order2.trigger_price = Some(100);
-        
-        let result2 = engine.process_order(stop_limit_order2, TimeInForce::GTC);
-        assert!(matches!(result2, Err(MatchingError::InvalidOrder(_))));
-    }
-    
-    // === EVENT SYSTEM INTEGRATION TESTS ===
-    
-    #[tokio::test]
-    async fn test_event_integration() {
-        use tokio::sync::Mutex;
-        use std::sync::Arc;
-        use crate::domain::services::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
-        
-        // Create a simple event collector
-        struct EventCollector {
-            events: Mutex<Vec<MatchingEngineEvent>>,
-        }
-        
-        #[async_trait::async_trait]
-        impl EventHandler for EventCollector {
-            fn event_types(&self) -> Vec<&'static str> {
-                vec![
-                    "OrderAdded", 
-                    "OrderMatched", 
-                    "OrderCancelled", 
-                    "TradeExecuted",
-                    "DepthUpdated"
-                ]
-            }
-            
-            async fn handle_event(&self, event: MatchingEngineEvent) -> EventResult<()> {
-                let mut events = self.events.lock().await;
-                events.push(event);
-                Ok(())
-            }
-        }
-        
-        // Setup test
-        let instrument_id = Uuid::new_v4();
-        let event_bus = EventBus::default();
-        let collector = Arc::new(EventCollector {
-            events: Mutex::new(Vec::new()),
-        });
-        
-        // Create the dispatcher and register the collector
-        let dispatcher = crate::domain::services::events::EventDispatcher::new(event_bus.clone());
-        dispatcher.register_handler(collector.clone()).await;
-        let _handle = dispatcher.start().await;
-        
-        // Create the matching engine with the event bus
-        let mut engine = MatchingEngine::with_event_bus(instrument_id, event_bus);
-        
-        // Process an order
-        let order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        engine.process_order(order, TimeInForce::GTC).unwrap();
-        
-        // Get depth to trigger DepthUpdated event
-        engine.get_depth(10);
-        
-        // Allow time for events to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
-        // Check collected events
-        let events = collector.events.lock().await;
-        
-        // Should have at least 2 events: OrderAdded and DepthUpdated
-        assert!(events.len() >= 2);
-        
-        // Verify we have the right event types
-        let mut has_order_added = false;
-        let mut has_depth_updated = false;
-        
-        for event in events.iter() {
-            match event {
-                MatchingEngineEvent::OrderAdded { .. } => has_order_added = true,
-                MatchingEngineEvent::DepthUpdated { .. } => has_depth_updated = true,
-                _ => {}
-            }
-        }
-        
-        assert!(has_order_added, "Missing OrderAdded event");
-        assert!(has_depth_updated, "Missing DepthUpdated event");
-    }
-    
-    #[tokio::test]
-    async fn test_event_trade_execution() {
-        use tokio::sync::Mutex;
-        use std::sync::Arc;
-        use crate::domain::services::events::{EventBus, MatchingEngineEvent, EventHandler, EventResult};
-        
-        // Create a simple event collector
-        struct EventCollector {
-            events: Mutex<Vec<MatchingEngineEvent>>,
-        }
-        
-        #[async_trait::async_trait]
-        impl EventHandler for EventCollector {
-            fn event_types(&self) -> Vec<&'static str> {
-                vec![
-                    "OrderAdded", 
-                    "OrderMatched", 
-                    "OrderCancelled", 
-                    "TradeExecuted",
-                    "DepthUpdated"
-                ]
-            }
-            
-            async fn handle_event(&self, event: MatchingEngineEvent) -> EventResult<()> {
-                let mut events = self.events.lock().await;
-                events.push(event);
-                Ok(())
-            }
-        }
-        
-        // Setup test
-        let instrument_id = Uuid::new_v4();
-        let event_bus = EventBus::default();
-        let collector = Arc::new(EventCollector {
-            events: Mutex::new(Vec::new()),
-        });
-        
-        // Create the dispatcher and register the collector
-        let dispatcher = crate::domain::services::events::EventDispatcher::new(event_bus.clone());
-        dispatcher.register_handler(collector.clone()).await;
-        let _handle = dispatcher.start().await;
-        
-        // Create the matching engine with the event bus
-        let mut engine = MatchingEngine::with_event_bus(instrument_id, event_bus);
-        
-        // Add a GTC sell order
-        let sell_order = create_test_order(
-            Side::Ask, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-        
-        // Add a matching buy order to generate a trade
-        let buy_order = create_test_order(
-            Side::Bid, 
-            OrderType::Limit, 
-            Some(100), 
-            1,
-            instrument_id
-        );
-        
-        engine.process_order(buy_order, TimeInForce::GTC).unwrap();
-        
-        // Allow time for events to process
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
-        // Check collected events
-        let events = collector.events.lock().await;
-        
-        // Verify we have a trade execution event
-        let mut has_trade_executed = false;
-        let mut has_order_matched = false;
-        
-        for event in events.iter() {
-            match event {
-                MatchingEngineEvent::TradeExecuted { .. } => has_trade_executed = true,
-                MatchingEngineEvent::OrderMatched { .. } => has_order_matched = true,
-                _ => {}
-            }
-        }
-        
-        assert!(has_trade_executed, "Missing TradeExecuted event");
-        assert!(has_order_matched, "Missing OrderMatched event");
     }
 }

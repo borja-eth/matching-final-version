@@ -1,7 +1,7 @@
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::domain::models::types::{Order, Side, OrderStatus};
+use crate::domain::models::types::OrderStatus;
 
 pub mod matching_engine;
 

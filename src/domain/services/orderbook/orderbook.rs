@@ -665,8 +665,9 @@ mod tests {
         let order = create_test_order(Side::Bid, 100_000, 100_000, instrument_id);
         book.add_order(order.clone()).unwrap();
         
-        // Try to remove with wrong price
-        let removed = book.remove_order(order.id);
+        // Try to remove a non-existent order
+        let non_existent_id = Uuid::new_v4();
+        let removed = book.remove_order(non_existent_id);
         assert!(removed.is_err());
         assert_eq!(book.volume_at_price(Side::Bid, 100_000), Some(100_000));
     }

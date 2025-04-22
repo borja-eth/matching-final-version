@@ -3,6 +3,9 @@ use uuid::Uuid;
 
 pub mod orderbook;
 pub mod depth;
+pub mod orderbook_worker;
+
+pub use orderbook_worker::{OrderBookWorker, OrderBookClient};
 
 /// Errors that can occur within the orderbook service.
 ///

@@ -17,16 +17,20 @@ use crate::domain::services::matching_engine::{
     MatchingEngineService, 
     MatchingEngineServiceResult, 
     MatchingEngineServiceError,
-    matching_engine::MatchingEngine
+    matching_engine::MatchingEngine,
+    MatchingEngineFactory
 };
 use crate::domain::services::matching_engine::matching_engine::MatchResult;
 use crate::domain::models::types::{Order, TimeInForce};
 use crate::domain::services::orderbook::depth::DepthSnapshot;
+use crate::domain::services::event_manager::DefaultEventManager;
 
 /// Concrete implementation of the MatchingEngineService trait
 pub struct MatchingEngineServiceImpl {
     /// Map of instrument ID to matching engine
     engines: HashMap<Uuid, Arc<RwLock<MatchingEngine>>>,
+    /// Event manager for publishing events
+    event_manager: Arc<DefaultEventManager>,
 }
 
 impl MatchingEngineService for MatchingEngineServiceImpl {
@@ -34,6 +38,15 @@ impl MatchingEngineService for MatchingEngineServiceImpl {
     fn new() -> Self {
         Self {
             engines: HashMap::new(),
+            event_manager: Arc::new(DefaultEventManager::new()),
+        }
+    }
+    
+    /// Creates a new instance of the matching engine service with a custom event manager
+    fn new_with_event_manager(event_manager: Arc<DefaultEventManager>) -> Self {
+        Self {
+            engines: HashMap::new(),
+            event_manager,
         }
     }
     
@@ -50,7 +63,21 @@ impl MatchingEngineService for MatchingEngineServiceImpl {
                     "Sync API can't access async engine lock - use async API instead".to_string()
                 ))
             },
-            None => Err(MatchingEngineServiceError::EngineNotFound(instrument_id)),
+            None => {
+                // Create a new engine for this instrument using the factory
+                let engine = MatchingEngineFactory::create_with_event_manager(
+                    instrument_id,
+                    self.event_manager.clone()
+                );
+                
+                let arc_engine = Arc::new(RwLock::new(engine));
+                self.engines.insert(instrument_id, arc_engine.clone());
+                
+                // Still can't process the order synchronously due to RwLock
+                Err(MatchingEngineServiceError::Other(
+                    "Sync API can't access async engine lock - use async API instead".to_string()
+                ))
+            }
         }
     }
     

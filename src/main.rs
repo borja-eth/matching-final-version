@@ -1,9 +1,11 @@
 mod domain;
 
-use std::sync::Arc;
 use chrono::Utc;
 use uuid::Uuid;
 use tracing_subscriber;
+use rabbitmq::{Message, PublisherContext, PublisherMode, RabbitMQBuilder, RabbitMQError, SubscriberMode};
+use std::env;
+use tokio::time::Duration;
 
 use ultimate_matching::{
     OrderType, Order, Side, OrderStatus, TimeInForce, MatchingEngine,
@@ -86,76 +88,99 @@ fn create_test_order(side: Side, price: f64, qty: f64, instrument_id: Uuid) -> O
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum AppSubscriptions {
+    Orders,
+}
+
+impl From<&'static str> for AppSubscriptions {
+    fn from(s: &'static str) -> Self {
+        match s {
+            "Orders" => Self::Orders,
+            _ => panic!("Unknown subscription: {}", s),
+        }
+    }
+}
+
+impl From<AppSubscriptions> for &'static str {
+    fn from(queue: AppSubscriptions) -> Self {
+        match queue {
+            AppSubscriptions::Orders => "Orders",
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() {
-    // Initialize tracing (for logging)
+async fn main() -> Result<(), Box<RabbitMQError>> {
+    // Initialize logging
     tracing_subscriber::fmt::init();
-    
-    println!("Starting event-driven matching engine example");
-    
-    // Create an instrument ID
-    let instrument_id = Uuid::new_v4();
-    println!("Instrument ID: {}", instrument_id);
-    
-    // Set up the event system
-    let event_bus = EventBus::default();
-    
-    // Create handlers
-    let console_handler = Arc::new(ConsoleEventHandler);
-    
-    // Create a persistence handler to store events
-    let persistence_handler = match PersistenceEventHandler::new(std::path::Path::new("./events"), 1000) {
-        Ok(handler) => {
-            println!("Persistence handler created. Events will be stored in ./events");
-            Some(Arc::new(handler))
+
+    // Get connection string from environment or use default
+    let connection_string = env::var("RABBITMQ_URL")
+        .unwrap_or_else(|_| "amqp://guest:guest@localhost:5672".to_string());
+
+    println!("Connecting to RabbitMQ at: {}", connection_string);
+
+    // Create a builder with a subscriber
+    let builder = RabbitMQBuilder::new(&connection_string, "SUBSCRIBER_APP")
+        .subscriber(AppSubscriptions::Orders, SubscriberMode::PubSub);
+
+    // Build the server (subscriber)
+    let server = match builder.build().await {
+        Ok(server) => {
+            println!("Successfully connected to RabbitMQ");
+            server
         },
-        Err(e) => {
-            eprintln!("Failed to create persistence handler: {}", e);
-            None
+        Err(err) => {
+            eprintln!("Failed to connect to RabbitMQ: {}", err);
+            return Err(Box::new(err));
         }
     };
-    
-    // Register handlers with the dispatcher
-    let dispatcher = EventDispatcher::new(event_bus.clone());
-    dispatcher.register_handler(console_handler).await;
-    
-    if let Some(handler) = persistence_handler.clone() {
-        dispatcher.register_handler(handler).await;
+
+    // Get the subscribers
+    let mut subscribers = server.get_subscribers();
+
+    // Get the Orders subscriber
+    let mut orders_subscriber = match subscribers.take_ownership((AppSubscriptions::Orders, SubscriberMode::PubSub)) {
+        Ok(subscriber) => {
+            println!("Successfully subscribed to Orders queue");
+            subscriber
+        },
+        Err(err) => {
+            eprintln!("Failed to subscribe to Orders queue: {}", err);
+            return Err(Box::new(err));
+        }
+    };
+
+    println!("Waiting for messages on Orders queue...");
+
+    // Continuously receive messages
+    loop {
+        if let Some(message) = orders_subscriber.receive().await {
+            println!("Received message from queue: {}", orders_subscriber.queue_name());
+            
+            if let Some(content) = &message.content {
+                let content_str = String::from_utf8_lossy(content);
+                println!("Message content: {}", content_str);
+                
+                // Handle message logic here
+                
+                // Acknowledge the message
+                if let Err(err) = orders_subscriber.ack(&message).await {
+                    eprintln!("Failed to acknowledge message: {}", err);
+                    // We don't want to exit the loop on ack errors, just log and continue
+                }
+            } else {
+                println!("Received empty message");
+            }
+        }
+        
+        // Small delay to prevent tight loop
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     
-    let _handle = dispatcher.start().await;
-    
-    // Create the matching engine with events
-    let mut engine = MatchingEngine::with_event_bus(instrument_id, event_bus);
-    
-    // Add some orders and see the events
-    println!("\nAdding orders...");
-    
-    // Add a sell order at 100
-    let sell_order = create_test_order(Side::Ask, 100.0, 1.0, instrument_id);
-    engine.process_order(sell_order, TimeInForce::GTC).unwrap();
-    
-    // Add a buy order at 99 (won't match)
-    let buy_order1 = create_test_order(Side::Bid, 99.0, 1.0, instrument_id);
-    engine.process_order(buy_order1, TimeInForce::GTC).unwrap();
-    
-    // Add a buy order at 100 (will match)
-    let buy_order2 = create_test_order(Side::Bid, 100.0, 0.5, instrument_id);
-    engine.process_order(buy_order2, TimeInForce::GTC).unwrap();
-    
-    // Get depth
-    let depth = engine.get_depth(10);
-    println!("\nCurrent depth:");
-    println!("Best bid: {:?}", depth.best_bid());
-    println!("Best ask: {:?}", depth.best_ask());
-    println!("Spread: {:?}", depth.spread());
-    
-    // Allow events to be processed
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    
-    println!("\nExample completed!");
-    
-    if let Some(_) = persistence_handler {
-        println!("Events have been persisted to the ./events directory");
-    }
+    // This line will never be reached due to the infinite loop above,
+    // but it satisfies the compiler's type checking for the function return type
+    #[allow(unreachable_code)]
+    Ok(())
 }

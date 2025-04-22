@@ -1,0 +1,9 @@
+/Users/borjamartelseward/Desktop/infinity-matcher/rabbitmq/target/debug/deps/libamqp_serde-6fdf622630ce97a5.rmeta: /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/lib.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/de.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/error.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/ser.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/types.rs
+
+/Users/borjamartelseward/Desktop/infinity-matcher/rabbitmq/target/debug/deps/amqp_serde-6fdf622630ce97a5.d: /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/lib.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/de.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/error.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/ser.rs /Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/types.rs
+
+/Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/lib.rs:
+/Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/de.rs:
+/Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/error.rs:
+/Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/ser.rs:
+/Users/borjamartelseward/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/amqp_serde-0.4.2/src/types.rs:

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::domain::services::orderbook::{
     OrderbookError,
-    orderbook_service::{BestBidAndAsk, DepthKey, DepthLevel},
+    depth::PriceLevel as DepthLevel,
 };
 
 use super::types::{Order, Side, OrderStatus};
@@ -14,6 +14,8 @@ pub enum OrderbookEvent {
     NewOrder(Order),
     CancelOrder(Uuid),
     Snapshot,
+    Halt,
+    Resume,
 }
 
 #[derive(Debug)]
@@ -26,9 +28,19 @@ pub enum OrderbookResult {
     Snapshot(OrderbookSnapshot),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OrderbookSnapshot {
     pub depth_levels: Vec<DepthLevel>,
+}
+
+// Helper type alias
+pub type DepthKey = i64;
+
+// Helper struct to represent the best bid and ask
+#[derive(Debug, Clone)]
+pub struct BestBidAndAsk {
+    pub best_bid: Option<i64>,
+    pub best_ask: Option<i64>,
 }
 
 #[derive(Debug, Clone)]

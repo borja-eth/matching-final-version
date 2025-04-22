@@ -40,24 +40,7 @@ use uuid::Uuid;
 use serde::{Serialize, Deserialize};
 
 use crate::domain::models::types::{Order, Side};
-
-/// Newtype wrapper for price to provide type safety and semantic meaning
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Price(i64);
-
-impl Price {
-    /// Creates a new Price from an i64
-    #[inline]
-    pub fn new(price: i64) -> Self {
-        Self(price)
-    }
-
-    /// Gets the inner i64 value
-    #[inline]
-    pub fn inner(&self) -> i64 {
-        self.0
-    }
-}
+pub type Price = i64;
 
 /// Represents an aggregated price level in the depth view
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -173,7 +156,7 @@ impl DepthTracker {
     #[inline]
     pub fn update_order_added(&mut self, order: &Order) {
         if let Some(price) = order.limit_price {
-            let price_key = Price::new(price);
+            let price_key = price;
             let price_levels = match order.side {
                 Side::Bid => &mut self.bids,
                 Side::Ask => &mut self.asks,
@@ -201,7 +184,7 @@ impl DepthTracker {
     #[inline]
     pub fn update_order_removed(&mut self, order: &Order) {
         if let Some(price) = order.limit_price {
-            let price_key = Price::new(price);
+            let price_key = price;
             let price_levels = match order.side {
                 Side::Bid => &mut self.bids,
                 Side::Ask => &mut self.asks,
@@ -227,7 +210,7 @@ impl DepthTracker {
     #[inline]
     pub fn update_order_matched(&mut self, order: &Order, matched_quantity: u64) {
         if let Some(price) = order.limit_price {
-            let price_key = Price::new(price);
+            let price_key = price;
             let price_levels = match order.side {
                 Side::Bid => &mut self.bids,
                 Side::Ask => &mut self.asks,

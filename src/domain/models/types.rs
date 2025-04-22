@@ -27,7 +27,7 @@ use chrono::{DateTime, Utc};
 use thiserror::Error; // Added early for consistency, though errors defined later
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
-
+use std::fmt;
 
 /// Represents the side of an order (Buy or Sell).
 #[allow(dead_code)]
@@ -38,6 +38,15 @@ pub enum Side {
     Bid,
     /// A sell order (also called sell).
     Ask,
+}
+
+impl fmt::Display for Side {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bid => write!(f, "BID"),
+            Self::Ask => write!(f, "ASK"),
+        }
+    }
 }
 
 #[allow(dead_code)]
