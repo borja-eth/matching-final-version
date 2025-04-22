@@ -26,7 +26,6 @@ use crate::domain::models::types::Order;
 use crate::domain::services::orderbook::
     orderbook_worker::OrderBookWorker
 ;
-use crate::domain::services::events::EventBus;
 
 use super::{OrderbookManagerError, OrderbookManagerService};
 
@@ -78,14 +77,12 @@ impl OrderbookManagerServiceImpl {
     /// # Arguments
     ///
     /// * `instruments` - List of instrument IDs to create orderbooks for
-    /// * `event_bus` - Event bus for handling orderbook events
     ///
     /// # Returns
     ///
     /// A new OrderbookManagerServiceImpl instance
     pub fn new(
         instruments: Vec<Uuid>,
-        event_bus: Arc<EventBus>,
     ) -> Self {
         info!(
             "Initializing orderbook manager service with instruments: {:?}",
@@ -106,7 +103,6 @@ impl OrderbookManagerServiceImpl {
 
             let _ob_result_sender = manager_result_sender.clone();
             let running = is_running.clone();
-            let _event_bus_clone = event_bus.clone();
 
             // Create and spawn thread for this instrument
             let thread = thread::Builder::new()
@@ -391,6 +387,7 @@ mod tests {
     use uuid::Uuid;
 
     // Helper function to create test orders
+    #[allow(dead_code)]
     fn create_test_order(
         side: Side,
         limit_price: i64,
@@ -427,8 +424,9 @@ mod tests {
 
     // Implement MockEventBus for testing
     #[derive(Default)]
+    #[allow(dead_code)]
     struct MockEventBus;
-    
+    #[allow(dead_code)]
     impl MockEventBus {
         fn new() -> Self {
             Self {}

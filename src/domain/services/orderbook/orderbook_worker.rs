@@ -87,6 +87,7 @@ enum OrderBookCommand {
 }
 
 /// Worker thread that processes order book operations
+#[allow(dead_code)]
 pub struct OrderBookWorker {
     /// The order book being managed by this worker
     order_book: OrderBook,

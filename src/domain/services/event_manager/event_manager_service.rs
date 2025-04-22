@@ -36,6 +36,7 @@ use super::{EventManagerError, EventManagerService};
 /// 1. Receiving orderbook results from orderbooks
 /// 2. Converting them to event types
 /// 3. Publishing them to external systems via RabbitMQ
+#[allow(dead_code)]
 pub struct EventManagerServiceImpl {
     /// RabbitMQ publisher for sending events
     rabbit_publisher: Arc<Publisher>,

@@ -153,9 +153,8 @@ The module provides comprehensive error handling through the `OrderbookManagerEr
 
 ```rust
 // Initialize with a list of instrument IDs
-let instruments = vec![Uuid::new_v4(), Uuid::new_v4()];
-let event_manager = Arc::new(EventManagerServiceImpl::new());
-let mut manager = OrderbookManagerServiceImpl::new(instruments, event_manager);
+let instruments = vec![instrument_id];
+let mut manager = OrderbookManagerServiceImpl::new(instruments);
 
 // Start the service
 manager.start().expect("Failed to start orderbook manager");

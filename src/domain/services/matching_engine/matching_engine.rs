@@ -167,7 +167,7 @@ impl MatchingEngine {
     ///
     /// ```
     /// use uuid::Uuid;
-    /// use crate::domain::services::matching_engine::MatchingEngine;
+    /// use ultimate_matching::domain::services::matching_engine::matching_engine::MatchingEngine;
     ///
     /// let instrument_id = Uuid::new_v4();
     /// let engine = MatchingEngine::new(instrument_id);
@@ -211,14 +211,37 @@ impl MatchingEngine {
     ///
     /// ```
     /// use uuid::Uuid;
-    /// use crate::domain::models::types::{Order, TimeInForce};
-    /// use crate::domain::services::matching_engine::MatchingEngine;
+    /// use chrono::Utc;
+    /// use ultimate_matching::domain::models::types::{Order, TimeInForce, OrderType, Side, OrderStatus, CreatedFrom};
+    /// use ultimate_matching::domain::services::matching_engine::matching_engine::MatchingEngine;
     ///
     /// let instrument_id = Uuid::new_v4();
     /// let mut engine = MatchingEngine::new(instrument_id);
     ///
-    /// // Create an order (details omitted for brevity)
-    /// let order = Order::new_limit_order(/* ... */);
+    /// // Create a sample order
+    /// let order = Order {
+    ///     id: Uuid::new_v4(),
+    ///     ext_id: Some("test".to_string()),
+    ///     account_id: Uuid::new_v4(),
+    ///     order_type: OrderType::Limit,
+    ///     instrument_id,
+    ///     side: Side::Bid,
+    ///     limit_price: Some(100),
+    ///     trigger_price: None,
+    ///     base_amount: 100,
+    ///     remaining_base: 100,
+    ///     filled_base: 0,
+    ///     filled_quote: 0,
+    ///     remaining_quote: 10000,
+    ///     expiration_date: Utc::now() + chrono::Duration::days(1),
+    ///     status: OrderStatus::Submitted,
+    ///     created_at: Utc::now(),
+    ///     updated_at: Utc::now(),
+    ///     trigger_by: None,
+    ///     created_from: CreatedFrom::Api,
+    ///     sequence_id: 0,
+    ///     time_in_force: TimeInForce::GTC,
+    /// };
     ///
     /// let result = engine.process_order(order, TimeInForce::GTC);
     /// ```

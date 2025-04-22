@@ -18,12 +18,11 @@ The orderbook system consists of the following components:
 
 ### 1. Starting the Orderbook Manager
 
-The `OrderbookManagerServiceImpl` should be initialized with a list of instrument IDs and an event bus:
+The `OrderbookManagerServiceImpl` should be initialized with a list of instrument IDs:
 
 ```rust
 let instruments = vec![Uuid::new_v4(), Uuid::new_v4()];
-let event_bus = Arc::new(EventBus::new());
-let orderbook_manager = OrderbookManagerServiceImpl::new(instruments, event_bus);
+let orderbook_manager = OrderbookManagerServiceImpl::new(instruments);
 ```
 
 ### 2. Adding Orders

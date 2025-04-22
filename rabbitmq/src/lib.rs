@@ -565,9 +565,14 @@ where
     /// # Errors
     /// Returns an error if establishing connection or setting up publishers fails
     pub async fn build(self) -> Result<RabbitMQClient<Pub>, RabbitMQError> {
+        tracing::info!("Building RabbitMQ client with publishers only");
+        tracing::info!("Connecting to RabbitMQ at: {}", self.connection_string);
+        
         let conn = open_rabbit_connection(&self.connection_string).await?;
 
+        tracing::info!("Setting up publishers");
         let pubs = Self::build_client(&conn, self.publishers.unwrap()).await?;
+        tracing::info!("RabbitMQ client build successful");
 
         Ok(pubs)
     }
@@ -642,9 +647,14 @@ where
     /// # Errors
     /// Returns an error if establishing connection or setting up subscriptions fails
     pub async fn build(self) -> Result<RabbitMQServer<Sub>, RabbitMQError> {
+        tracing::info!("Building RabbitMQ server with subscribers only");
+        tracing::info!("Connecting to RabbitMQ at: {}", self.connection_string);
+        
         let conn = open_rabbit_connection(&self.connection_string).await?;
 
+        tracing::info!("Setting up subscribers");
         let subs = Self::build_server(&conn, self.subscribers.unwrap()).await?;
+        tracing::info!("RabbitMQ server build successful");
 
         Ok(subs)
     }
@@ -703,11 +713,18 @@ where
     /// # Errors
     /// Returns an error if establishing connection or setting up publishers/subscribers fails
     pub async fn build(self) -> Result<(RabbitMQClient<Pub>, RabbitMQServer<Sub>), RabbitMQError> {
+        tracing::info!("Building RabbitMQ client and server with both publishers and subscribers");
+        tracing::info!("Connecting to RabbitMQ at: {}", self.connection_string);
+        
         let conn = open_rabbit_connection(&self.connection_string).await?;
 
+        tracing::info!("Setting up publishers");
         let pubs = Self::build_client(&conn, self.publishers.unwrap()).await?;
+        
+        tracing::info!("Setting up subscribers");
         let subs = Self::build_server(&conn, self.subscribers.unwrap()).await?;
-
+        
+        tracing::info!("RabbitMQ client and server build successful");
         Ok((pubs, subs))
     }
 }
@@ -1617,31 +1634,68 @@ pub enum RabbitMQError {
 }
 
 async fn open_rabbit_connection(connection_string: &str) -> Result<Connection, RabbitMQError> {
-    let open_conn_args = OpenConnectionArguments::try_from(connection_string)
-        .map_err(|err| RabbitMQError::UriError(err.to_string()))?;
+    tracing::info!("Attempting to open RabbitMQ connection to: {}", connection_string);
+    
+    let open_conn_args = match OpenConnectionArguments::try_from(connection_string) {
+        Ok(args) => {
+            tracing::info!("Successfully parsed connection arguments");
+            args
+        },
+        Err(err) => {
+            tracing::error!("Failed to parse connection string: {}", err);
+            return Err(RabbitMQError::UriError(err.to_string()));
+        }
+    };
 
-    let conn = Connection::open(&open_conn_args)
-        .await
-        .map_err(|err| RabbitMQError::ConnectionError(err.to_string()))?;
+    tracing::info!("Connecting to RabbitMQ server...");
+    let conn = match Connection::open(&open_conn_args).await {
+        Ok(conn) => {
+            tracing::info!("Successfully established connection to RabbitMQ");
+            conn
+        },
+        Err(err) => {
+            tracing::error!("Failed to connect to RabbitMQ: {}", err);
+            return Err(RabbitMQError::ConnectionError(err.to_string()));
+        }
+    };
 
-    conn.register_callback(RabbitConnectionCallback)
-        .await
-        .map_err(|err| RabbitMQError::ConnectionError(err.to_string()))?;
+    tracing::info!("Registering connection callback");
+    match conn.register_callback(RabbitConnectionCallback).await {
+        Ok(_) => tracing::info!("Successfully registered connection callback"),
+        Err(err) => {
+            tracing::error!("Failed to register connection callback: {}", err);
+            return Err(RabbitMQError::ConnectionError(err.to_string()));
+        }
+    }
 
+    tracing::info!("RabbitMQ connection established successfully");
     Ok(conn)
 }
 
 async fn open_rabbit_channel(conn: &Connection) -> Result<Channel, RabbitMQError> {
-    let rabbit_channel = conn
-        .open_channel(None)
-        .await
-        .map_err(|err| RabbitMQError::OpenChannelError(err.to_string()))?;
+    tracing::info!("Opening RabbitMQ channel");
+    
+    let rabbit_channel = match conn.open_channel(None).await {
+        Ok(ch) => {
+            tracing::info!("Successfully opened channel");
+            ch
+        },
+        Err(err) => {
+            tracing::error!("Failed to open channel: {}", err);
+            return Err(RabbitMQError::OpenChannelError(err.to_string()));
+        }
+    };
 
-    rabbit_channel
-        .register_callback(RabbitChannelCallback)
-        .await
-        .map_err(|err| RabbitMQError::OpenChannelError(err.to_string()))?;
+    tracing::info!("Registering channel callback");
+    match rabbit_channel.register_callback(RabbitChannelCallback).await {
+        Ok(_) => tracing::info!("Successfully registered channel callback"),
+        Err(err) => {
+            tracing::error!("Failed to register channel callback: {}", err);
+            return Err(RabbitMQError::OpenChannelError(err.to_string()));
+        }
+    }
 
+    tracing::info!("RabbitMQ channel opened successfully");
     Ok(rabbit_channel)
 }
 

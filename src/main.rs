@@ -1,186 +1,344 @@
-mod domain;
+use std::sync::Arc;
+use std::process;
 
-use chrono::Utc;
-use uuid::Uuid;
-use tracing_subscriber;
-use rabbitmq::{Message, PublisherContext, PublisherMode, RabbitMQBuilder, RabbitMQError, SubscriberMode};
-use std::env;
+use dotenv::dotenv;
+use rabbitmq::{PublisherMode, RabbitMQBuilder, SubscriberMode};
+use tokio::sync::mpsc;
 use tokio::time::Duration;
+use tracing::{info, error};
 
 use ultimate_matching::{
-    OrderType, Order, Side, OrderStatus, TimeInForce, MatchingEngine,
-    domain::services::events::{EventBus, EventDispatcher, EventHandler, MatchingEngineEvent, EventResult, PersistenceEventHandler},
-    domain::models::types::CreatedFrom
+    Config,
+    OrderbookManagerServiceImpl,
+    domain::services::event_manager::{
+        EventManagerService,
+        event_manager_service::EventManagerServiceImpl
+    },
+    outbounds::events::{
+        market::MarketEventHandler,
+        order::OrderEventHandler
+    },
+    inbounds::handlers::{
+        cancel_handler::handle_cancel_request,
+        place_handler::handle_place_request,
+        snapshot_handler::handle_snapshot_request,
+        trading_status_handler::handle_trading_status_request
+    }
 };
 
-/// Simple event handler that prints events to the console
-struct ConsoleEventHandler;
-
-#[async_trait::async_trait]
-impl EventHandler for ConsoleEventHandler {
-    fn event_types(&self) -> Vec<&'static str> {
-        vec![
-            "OrderAdded", 
-            "OrderMatched", 
-            "OrderCancelled", 
-            "TradeExecuted",
-            "DepthUpdated"
-        ]
-    }
-    
-    async fn handle_event(&self, event: MatchingEngineEvent) -> EventResult<()> {
-        match &event {
-            MatchingEngineEvent::OrderAdded { order, timestamp } => {
-                println!("[{}] Order added: {} {} at {:?}", 
-                    timestamp,
-                    match order.side {
-                        Side::Bid => "BUY",
-                        Side::Ask => "SELL"
-                    },
-                    order.base_amount,
-                    order.limit_price
-                );
-            },
-            MatchingEngineEvent::TradeExecuted { trade, timestamp } => {
-                println!("[{}] Trade executed: {} @ {}", 
-                    timestamp,
-                    trade.base_amount,
-                    trade.price
-                );
-            },
-            _ => {} // Ignore other events
-        }
-        Ok(())
-    }
+/// RabbitMQ subscription types for the matching engine
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MatchingEngineSubscriptions {
+    /// New order placements
+    PlaceOrder,
+    /// Order cancellations
+    CancelOrder,
+    /// Orderbook snapshot requests
+    SnapshotRequest,
+    /// Trading status requests
+    TradingStatus,
 }
 
-/// Create a test order
-fn create_test_order(side: Side, price: f64, qty: f64, instrument_id: Uuid) -> Order {
-    let now = Utc::now();
-    
-    // Convert to integer values with 6 decimal places of precision
-    let price_i64 = (price * 1_000_000.0) as i64;
-    let qty_u64 = (qty * 1_000_000.0) as u64;
-    let quote_amount = ((price * qty) * 1_000_000.0) as u64;
-    
-    Order {
-        id: Uuid::new_v4(),
-        ext_id: Some("example-order".to_string()),
-        account_id: Uuid::new_v4(),
-        order_type: OrderType::Limit,
-        instrument_id,
-        side,
-        limit_price: Some(price_i64),
-        trigger_price: None,
-        base_amount: qty_u64,
-        remaining_base: qty_u64,
-        filled_quote: 0,
-        filled_base: 0,
-        remaining_quote: quote_amount,
-        expiration_date: now + chrono::Duration::days(7),
-        status: OrderStatus::Submitted,
-        created_at: now,
-        updated_at: now,
-        trigger_by: None,
-        created_from: CreatedFrom::Api,
-        sequence_id: 0,
-        time_in_force: TimeInForce::GTC,
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Hash)]
-enum AppSubscriptions {
-    Orders,
-}
-
-impl From<&'static str> for AppSubscriptions {
+impl From<&'static str> for MatchingEngineSubscriptions {
     fn from(s: &'static str) -> Self {
         match s {
-            "Orders" => Self::Orders,
-            _ => panic!("Unknown subscription: {}", s),
+            "PlaceOrder" => Self::PlaceOrder,
+            "CancelOrder" => Self::CancelOrder,
+            "SnapshotRequest" => Self::SnapshotRequest,
+            "TradingStatus" => Self::TradingStatus,
+            _ => panic!("Unknown subscription type: {}", s),
         }
     }
 }
 
-impl From<AppSubscriptions> for &'static str {
-    fn from(queue: AppSubscriptions) -> Self {
-        match queue {
-            AppSubscriptions::Orders => "Orders",
+impl From<MatchingEngineSubscriptions> for &'static str {
+    fn from(subscription: MatchingEngineSubscriptions) -> Self {
+        match subscription {
+            MatchingEngineSubscriptions::PlaceOrder => "PlaceOrder",
+            MatchingEngineSubscriptions::CancelOrder => "CancelOrder", 
+            MatchingEngineSubscriptions::SnapshotRequest => "SnapshotRequest",
+            MatchingEngineSubscriptions::TradingStatus => "TradingStatus",
+        }
+    }
+}
+
+/// Initialize tracing for the application
+fn init_tracing() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
+}
+
+/// Get configuration with Docker support
+fn get_config() -> Config {
+    match Config::from_env() {
+        config => {
+            // Check if we're in a Docker environment and adjust RabbitMQ URL if needed
+            let mut config = config;
+            let is_docker_env = true; // Set this based on your deployment environment
+            
+            if is_docker_env {
+                info!("Running in Docker environment, using container IP");
+                config.rabbit_url = "amqp://guest:guest@172.17.0.2:5672".to_string();
+            }
+            
+            info!("Loaded configuration with {} instruments", config.instruments.len());
+            info!("Using RabbitMQ URL: {}", config.rabbit_url);
+            config
         }
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<RabbitMQError>> {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+async fn main() {
+    // Initialize environment variables and tracing
+    dotenv().ok();
+    init_tracing();
+    info!("Starting ultimate matching engine...");
 
-    // Get connection string from environment or use default
-    let connection_string = env::var("RABBITMQ_URL")
-        .unwrap_or_else(|_| "amqp://guest:guest@localhost:5672".to_string());
+    // Load configuration with Docker support
+    let config = get_config();
 
-    println!("Connecting to RabbitMQ at: {}", connection_string);
+    // Create communication channel for orderbook results
+    let (_result_sender, result_receiver) = mpsc::channel(100_000);
 
-    // Create a builder with a subscriber
-    let builder = RabbitMQBuilder::new(&connection_string, "SUBSCRIBER_APP")
-        .subscriber(AppSubscriptions::Orders, SubscriberMode::PubSub);
-
-    // Build the server (subscriber)
-    let server = match builder.build().await {
-        Ok(server) => {
-            println!("Successfully connected to RabbitMQ");
-            server
+    // Initialize event manager service
+    let event_manager = match tokio::time::timeout(
+        Duration::from_secs(5),
+        EventManagerServiceImpl::new(&config)
+    ).await {
+        Ok(service) => {
+            info!("Event manager service initialized");
+            service
         },
-        Err(err) => {
-            eprintln!("Failed to connect to RabbitMQ: {}", err);
-            return Err(Box::new(err));
+        Err(_) => {
+            error!("Timed out connecting to RabbitMQ for event manager after 5 seconds");
+            // Try direct connection to diagnose
+            info!("Attempting direct TCP connection to diagnose...");
+            match tokio::net::TcpStream::connect("172.17.0.2:5672").await {
+                Ok(_) => info!("TCP connection succeeded, but AMQP protocol timed out"),
+                Err(e) => error!("TCP connection failed: {}", e),
+            };
+            
+            error!("Exiting due to RabbitMQ connection failure");
+            process::exit(1);
         }
     };
 
-    // Get the subscribers
-    let mut subscribers = server.get_subscribers();
+    // Start event manager thread
+    let event_manager_handle = event_manager.run(result_receiver);
+    info!("Event manager thread started");
 
-    // Get the Orders subscriber
-    let mut orders_subscriber = match subscribers.take_ownership((AppSubscriptions::Orders, SubscriberMode::PubSub)) {
+    // Initialize orderbook manager service
+    let orderbook_manager = Arc::new(OrderbookManagerServiceImpl::new(config.instruments.clone()));
+    info!("Orderbook manager service initialized");
+
+    // Initialize event handlers
+    let _market_event_handler = MarketEventHandler::new();
+    let _order_event_handler = OrderEventHandler::new();
+    info!("Event handlers initialized");
+
+    // Connect to RabbitMQ
+    info!("Connecting to RabbitMQ at: {}", config.rabbit_url);
+    let builder = RabbitMQBuilder::new(&config.rabbit_url, &config.app_id)
+        .subscriber(MatchingEngineSubscriptions::PlaceOrder, SubscriberMode::PubSub)
+        .subscriber(MatchingEngineSubscriptions::CancelOrder, SubscriberMode::PubSub)
+        .subscriber(MatchingEngineSubscriptions::SnapshotRequest, SubscriberMode::PubSub)
+        .subscriber(MatchingEngineSubscriptions::TradingStatus, SubscriberMode::PubSub)
+        .publisher("events", PublisherMode::Broadcast);
+
+    // Build RabbitMQ client and server with timeout
+    let connection_result = match tokio::time::timeout(
+        Duration::from_secs(5), 
+        builder.build()
+    ).await {
+        Ok(result) => result,
+        Err(_) => {
+            error!("Connection to RabbitMQ timed out after 5 seconds");
+            // Try direct connection to diagnose
+            info!("Attempting direct TCP connection to diagnose...");
+            match tokio::net::TcpStream::connect("172.17.0.2:5672").await {
+                Ok(_) => info!("TCP connection succeeded, but AMQP protocol timed out"),
+                Err(e) => error!("TCP connection failed: {}", e),
+            };
+            
+            error!("Exiting due to RabbitMQ connection timeout");
+            process::exit(1);
+        }
+    };
+    
+    let (client, server) = match connection_result {
+        Ok((client, server)) => {
+            info!("Successfully connected to RabbitMQ");
+            (client, server)
+        },
+        Err(err) => {
+            error!("Failed to connect to RabbitMQ: {}", err);
+            process::exit(1);
+        }
+    };
+
+    let mut subscribers = server.get_subscribers();
+    
+    // Get the event publisher
+    let mut publishers = client.get_publishers();
+    let _event_publisher = match publishers.take_ownership(("events", PublisherMode::Broadcast)) {
+        Ok(publisher) => {
+            info!("Created events publisher");
+            publisher
+        },
+        Err(err) => {
+            error!("Failed to create events publisher: {}", err);
+            process::exit(1);
+        }
+    };
+
+    // Get each subscriber
+    let mut place_order_subscriber = match subscribers.take_ownership((MatchingEngineSubscriptions::PlaceOrder, SubscriberMode::PubSub)) {
         Ok(subscriber) => {
-            println!("Successfully subscribed to Orders queue");
+            info!("Subscribed to PlaceOrder queue: {}", subscriber.queue_name());
             subscriber
         },
         Err(err) => {
-            eprintln!("Failed to subscribe to Orders queue: {}", err);
-            return Err(Box::new(err));
+            error!("Failed to subscribe to PlaceOrder queue: {}", err);
+            process::exit(1);
         }
     };
 
-    println!("Waiting for messages on Orders queue...");
-
-    // Continuously receive messages
-    loop {
-        if let Some(message) = orders_subscriber.receive().await {
-            println!("Received message from queue: {}", orders_subscriber.queue_name());
-            
-            if let Some(content) = &message.content {
-                let content_str = String::from_utf8_lossy(content);
-                println!("Message content: {}", content_str);
-                
-                // Handle message logic here
-                
-                // Acknowledge the message
-                if let Err(err) = orders_subscriber.ack(&message).await {
-                    eprintln!("Failed to acknowledge message: {}", err);
-                    // We don't want to exit the loop on ack errors, just log and continue
-                }
-            } else {
-                println!("Received empty message");
-            }
+    let mut cancel_order_subscriber = match subscribers.take_ownership((MatchingEngineSubscriptions::CancelOrder, SubscriberMode::PubSub)) {
+        Ok(subscriber) => {
+            info!("Subscribed to CancelOrder queue: {}", subscriber.queue_name());
+            subscriber
+        },
+        Err(err) => {
+            error!("Failed to subscribe to CancelOrder queue: {}", err);
+            process::exit(1);
         }
-        
-        // Small delay to prevent tight loop
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+
+    let mut snapshot_subscriber = match subscribers.take_ownership((MatchingEngineSubscriptions::SnapshotRequest, SubscriberMode::PubSub)) {
+        Ok(subscriber) => {
+            info!("Subscribed to SnapshotRequest queue: {}", subscriber.queue_name());
+            subscriber
+        },
+        Err(err) => {
+            error!("Failed to subscribe to SnapshotRequest queue: {}", err);
+            process::exit(1);
+        }
+    };
+
+    let mut trading_status_subscriber = match subscribers.take_ownership((MatchingEngineSubscriptions::TradingStatus, SubscriberMode::PubSub)) {
+        Ok(subscriber) => {
+            info!("Subscribed to TradingStatus queue: {}", subscriber.queue_name());
+            subscriber
+        },
+        Err(err) => {
+            error!("Failed to subscribe to TradingStatus queue: {}", err);
+            process::exit(1);
+        }
+    };
+
+    info!("Matching engine ready to process orders");
+
+    // Process incoming messages
+    let orderbook_manager_clone = orderbook_manager.clone();
+    let place_order_task = tokio::spawn(async move {
+        loop {
+            if let Some(message) = place_order_subscriber.receive().await {
+                if let Some(content) = &message.content {
+                    info!("Received place order request");
+                    match handle_place_request(content.to_vec(), orderbook_manager_clone.clone()) {
+                        Ok(_) => info!("Successfully processed place order request"),
+                        Err(e) => error!("Error processing place order request: {}", e),
+                    }
+                    
+                    if let Err(e) = place_order_subscriber.ack(&message).await {
+                        error!("Failed to acknowledge place order message: {}", e);
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    let orderbook_manager_clone = orderbook_manager.clone();
+    let cancel_order_task = tokio::spawn(async move {
+        loop {
+            if let Some(message) = cancel_order_subscriber.receive().await {
+                if let Some(content) = &message.content {
+                    info!("Received cancel order request");
+                    match handle_cancel_request(content.to_vec(), orderbook_manager_clone.clone()) {
+                        Ok(_) => info!("Successfully processed cancel order request"),
+                        Err(e) => error!("Error processing cancel order request: {}", e),
+                    }
+                    
+                    if let Err(e) = cancel_order_subscriber.ack(&message).await {
+                        error!("Failed to acknowledge cancel order message: {}", e);
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    let orderbook_manager_clone = orderbook_manager.clone();
+    let snapshot_task = tokio::spawn(async move {
+        loop {
+            if let Some(message) = snapshot_subscriber.receive().await {
+                if let Some(content) = &message.content {
+                    info!("Received snapshot request");
+                    match handle_snapshot_request(content.to_vec(), orderbook_manager_clone.clone()) {
+                        Ok(_) => info!("Successfully processed snapshot request"),
+                        Err(e) => error!("Error processing snapshot request: {}", e),
+                    }
+                    
+                    if let Err(e) = snapshot_subscriber.ack(&message).await {
+                        error!("Failed to acknowledge snapshot message: {}", e);
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    let orderbook_manager_clone = orderbook_manager.clone();
+    let trading_status_task = tokio::spawn(async move {
+        loop {
+            if let Some(message) = trading_status_subscriber.receive().await {
+                if let Some(content) = &message.content {
+                    info!("Received trading status request");
+                    match handle_trading_status_request(content.to_vec(), orderbook_manager_clone.clone()) {
+                        Ok(_) => info!("Successfully processed trading status request"),
+                        Err(e) => error!("Error processing trading status request: {}", e),
+                    }
+                    
+                    if let Err(e) = trading_status_subscriber.ack(&message).await {
+                        error!("Failed to acknowledge trading status message: {}", e);
+                    }
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    });
+
+    // Start all tasks
+    match tokio::try_join!(
+        place_order_task,
+        cancel_order_task,
+        snapshot_task,
+        trading_status_task
+    ) {
+        Ok(_) => {},
+        Err(e) => {
+            error!("Error in task: {}", e);
+            // In production, would implement proper error handling and recovery
+        }
     }
-    
-    // This line will never be reached due to the infinite loop above,
-    // but it satisfies the compiler's type checking for the function return type
-    #[allow(unreachable_code)]
-    Ok(())
+
+    // Wait for event manager thread to complete
+    if let Err(e) = event_manager_handle.join() {
+        error!("Error joining event manager thread: {:?}", e);
+    }
+
+    info!("Matching engine shutting down");
 }

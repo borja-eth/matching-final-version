@@ -16,10 +16,6 @@ pub use domain::services::orderbook::depth::{DepthSnapshot, PriceLevel};
 pub use domain::services::matching_engine::matching_engine::{
     MatchingEngine, MatchResult, MatchingError
 };
-pub use domain::services::events::{
-    EventBus, EventDispatcher, EventHandler, EventError, EventResult, MatchingEngineEvent,
-    PersistenceEventHandler, EventLogger
-}; 
 pub use domain::services::orderbook_manager::{
     OrderbookManagerService, OrderbookManagerError
 };
